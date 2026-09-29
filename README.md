@@ -27,6 +27,8 @@ A full-stack, college-grade **Data Structures & Algorithms MCQ Assessment Web Ap
      - **Green (`✓ CORRECT`)** badge for correct answers.
      - **Red (`✗ WRONG`)** badge for incorrect answers.
      - Highlights student's selected answer vs. authoritative correct answer.
+     <img width="1891" height="943" alt="Screenshot 2026-09-30 051804" src="https://github.com/user-attachments/assets/b027e717-4649-43e5-ace1-0bd2b53ef961" />
+     <img width="1894" height="929" alt="image" src="https://github.com/user-attachments/assets/8c555422-7d79-4011-9b27-59b17326f955" />
 
 ---
 
@@ -44,6 +46,9 @@ A full-stack, college-grade **Data Structures & Algorithms MCQ Assessment Web Ap
 - **Excel/CSV Data Export**:
   - **Summary Export**: Excel workbook containing Enrollment No, Name, Department, Score, Percentage, Correct/Wrong counts, and Submission Date.
   - **Detailed Answer Export**: Excel workbook containing question-by-question student responses for all students.
+<img width="1894" height="925" alt="Std" src="https://github.com/user-attachments/assets/86a9ef0f-0b8e-4713-a015-34f9549f30ac" />
+
+<img width="1909" height="935" alt="Addd" src="https://github.com/user-attachments/assets/e6d2f448-8f17-4693-887a-f4fa68a27df5" />
 
 ---
 
@@ -125,5 +130,5 @@ npm run dev
 | Parameter | Value |
 | --- | --- |
 | **Login Route** | `/admin/login` |
-| **Username** | `admin` |
-| **Password** | `admin123` |
+| **Username** | `` |
+| **Password** | `` |
