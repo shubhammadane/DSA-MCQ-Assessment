@@ -1,0 +1,552 @@
+[
+  {
+    "id": 1,
+    "question": "Which of the following best describes a data structure?",
+    "options": {
+      "A": "A programming language",
+      "B": "A method of organizing and storing data for efficient access and modification",
+      "C": "A compiler technique",
+      "D": "An operating system"
+    },
+    "correct_answer": "B"
+  },
+  {
+    "id": 2,
+    "question": "Which of the following is a linear data structure?",
+    "options": {
+      "A": "Tree",
+      "B": "Graph",
+      "C": "Stack",
+      "D": "Heap"
+    },
+    "correct_answer": "C"
+  },
+  {
+    "id": 3,
+    "question": "Which of the following is a nonlinear data structure?",
+    "options": {
+      "A": "Array",
+      "B": "Queue",
+      "C": "Linked list",
+      "D": "Tree"
+    },
+    "correct_answer": "D"
+  },
+  {
+    "id": 4,
+    "question": "An Abstract Data Type (ADT) specifies:",
+    "options": {
+      "A": "Only the memory address of data",
+      "B": "The implementation language",
+      "C": "Data and operations without specifying implementation details",
+      "D": "Only the input format"
+    },
+    "correct_answer": "C"
+  },
+  {
+    "id": 5,
+    "question": "Which of the following is an example of a LIFO structure?",
+    "options": {
+      "A": "Queue",
+      "B": "Stack",
+      "C": "Circular queue",
+      "D": "Linked list"
+    },
+    "correct_answer": "B"
+  },
+  {
+    "id": 6,
+    "question": "Which principle is followed by a queue?",
+    "options": {
+      "A": "LIFO",
+      "B": "FIFO",
+      "C": "FILO only",
+      "D": "Random access"
+    },
+    "correct_answer": "B"
+  },
+  {
+    "id": 7,
+    "question": "Which notation places the operator between its operands?",
+    "options": {
+      "A": "Prefix",
+      "B": "Postfix",
+      "C": "Infix",
+      "D": "Polish"
+    },
+    "correct_answer": "C"
+  },
+  {
+    "id": 8,
+    "question": "Which notation represents A + B as AB+?",
+    "options": {
+      "A": "Prefix",
+      "B": "Infix",
+      "C": "Postfix",
+      "D": "Functional"
+    },
+    "correct_answer": "C"
+  },
+  {
+    "id": 9,
+    "question": "Which operation inserts an element into a stack?",
+    "options": {
+      "A": "Pop",
+      "B": "Push",
+      "C": "Peek",
+      "D": "Dequeue"
+    },
+    "correct_answer": "B"
+  },
+  {
+    "id": 10,
+    "question": "Which operation removes an element from the front of a queue?",
+    "options": {
+      "A": "Push",
+      "B": "Pop",
+      "C": "Enqueue",
+      "D": "Dequeue"
+    },
+    "correct_answer": "D"
+  },
+  {
+    "id": 11,
+    "question": "What is the time complexity of push operation in a stack implemented using an array, assuming the stack is not full?",
+    "options": {
+      "A": "O(n)",
+      "B": "O(log n)",
+      "C": "O(1)",
+      "D": "O(n²)"
+    },
+    "correct_answer": "C"
+  },
+  {
+    "id": 12,
+    "question": "What condition indicates stack overflow in an array implementation?",
+    "options": {
+      "A": "top == -1",
+      "B": "top == 0",
+      "C": "top == MAX-1",
+      "D": "top == MAX"
+    },
+    "correct_answer": "C"
+  },
+  {
+    "id": 13,
+    "question": "What condition indicates stack underflow?",
+    "options": {
+      "A": "top == -1",
+      "B": "top == MAX-1",
+      "C": "top == 0",
+      "D": "top == 1"
+    },
+    "correct_answer": "A"
+  },
+  {
+    "id": 14,
+    "question": "Which data structure is most directly used to implement recursion?",
+    "options": {
+      "A": "Queue",
+      "B": "Stack",
+      "C": "Circular linked list",
+      "D": "Graph"
+    },
+    "correct_answer": "B"
+  },
+  {
+    "id": 15,
+    "question": "Which data structure is commonly used for Breadth-First Search (BFS)?",
+    "options": {
+      "A": "Stack",
+      "B": "Queue",
+      "C": "Heap",
+      "D": "Priority stack"
+    },
+    "correct_answer": "B"
+  },
+  {
+    "id": 16,
+    "question": "Which data structure is commonly used for Depth-First Search (DFS)?",
+    "options": {
+      "A": "Queue",
+      "B": "Stack",
+      "C": "Circular queue only",
+      "D": "Hash table only"
+    },
+    "correct_answer": "B"
+  },
+  {
+    "id": 17,
+    "question": "The postfix form of A + B * C is:",
+    "options": {
+      "A": "AB+C*",
+      "B": "ABC*+",
+      "C": "+A*BC",
+      "D": "A+B*C"
+    },
+    "correct_answer": "B"
+  },
+  {
+    "id": 18,
+    "question": "The prefix form of A + B * C is:",
+    "options": {
+      "A": "+A*BC",
+      "B": "*+ABC",
+      "C": "ABC*+",
+      "D": "A+B*C"
+    },
+    "correct_answer": "A"
+  },
+  {
+    "id": 19,
+    "question": "The postfix form of (A+B)*C is:",
+    "options": {
+      "A": "AB+C*",
+      "B": "ABC+*",
+      "C": "*+ABC",
+      "D": "A+B*C*"
+    },
+    "correct_answer": "A"
+  },
+  {
+    "id": 20,
+    "question": "During postfix evaluation, when an operator is encountered, the evaluator generally:",
+    "options": {
+      "A": "Pushes the operator onto the stack",
+      "B": "Pops operands, applies the operator, and pushes the result",
+      "C": "Deletes the entire stack",
+      "D": "Converts the expression to infix"
+    },
+    "correct_answer": "B"
+  },
+  {
+    "id": 21,
+    "question": "In a singly linked list, each node normally contains:",
+    "options": {
+      "A": "Data and pointer to the next node",
+      "B": "Only data",
+      "C": "Two data fields only",
+      "D": "Pointer to previous and next nodes"
+    },
+    "correct_answer": "A"
+  },
+  {
+    "id": 22,
+    "question": "What is the main advantage of a linked list over a fixed-size array?",
+    "options": {
+      "A": "Constant-time random access",
+      "B": "Dynamic size and easier insertion/deletion without shifting elements",
+      "C": "Less memory in every case",
+      "D": "Direct binary search"
+    },
+    "correct_answer": "B"
+  },
+  {
+    "id": 23,
+    "question": "Inserting a node at the beginning of a singly linked list requires:",
+    "options": {
+      "A": "Traversing the complete list",
+      "B": "Updating the new node's next pointer and the head pointer",
+      "C": "Sorting the list first",
+      "D": "Updating only the tail"
+    },
+    "correct_answer": "B"
+  },
+  {
+    "id": 24,
+    "question": "In a circular linked list, the next pointer of the last node points to:",
+    "options": {
+      "A": "NULL",
+      "B": "The first node",
+      "C": "The previous node",
+      "D": "A random node"
+    },
+    "correct_answer": "B"
+  },
+  {
+    "id": 25,
+    "question": "A doubly linked list node generally contains:",
+    "options": {
+      "A": "Data and one pointer",
+      "B": "Data and two pointers: previous and next",
+      "C": "Only two data fields",
+      "D": "Three pointers and no data"
+    },
+    "correct_answer": "B"
+  },
+  {
+    "id": 26,
+    "question": "Which linked list is particularly useful when traversal is required in both directions?",
+    "options": {
+      "A": "Singly linked list",
+      "B": "Circular singly linked list",
+      "C": "Doubly linked list",
+      "D": "Linear array"
+    },
+    "correct_answer": "C"
+  },
+  {
+    "id": 27,
+    "question": "What is the worst-case time complexity of searching an unsorted singly linked list?",
+    "options": {
+      "A": "O(1)",
+      "B": "O(log n)",
+      "C": "O(n)",
+      "D": "O(n log n)"
+    },
+    "correct_answer": "C"
+  },
+  {
+    "id": 28,
+    "question": "For a polynomial represented by a linked list, each node commonly stores:",
+    "options": {
+      "A": "Only the coefficient",
+      "B": "Only the exponent",
+      "C": "Coefficient, exponent, and link to the next term",
+      "D": "Only the address of the polynomial"
+    },
+    "correct_answer": "C"
+  },
+  {
+    "id": 29,
+    "question": "Which linked-list operation generally requires changing links rather than shifting all subsequent elements?",
+    "options": {
+      "A": "Insertion",
+      "B": "Array indexing",
+      "C": "Binary search",
+      "D": "Memory allocation only"
+    },
+    "correct_answer": "A"
+  },
+  {
+    "id": 30,
+    "question": "Which statement about a circular linked list is correct?",
+    "options": {
+      "A": "It must contain exactly two nodes",
+      "B": "It has no NULL link at the end of the circular chain",
+      "C": "It cannot be traversed",
+      "D": "It cannot support insertion"
+    },
+    "correct_answer": "B"
+  },
+  {
+    "id": 31,
+    "question": "Consider: int stack[5], top = -1; Which statement correctly pushes x?",
+    "options": {
+      "A": "stack[++top] = x;",
+      "B": "stack[top--] = x;",
+      "C": "stack[top] = x; top++;",
+      "D": "stack[--top] = x;"
+    },
+    "correct_answer": "A"
+  },
+  {
+    "id": 32,
+    "question": "For an array stack, which condition should be checked before push to prevent overflow?",
+    "options": {
+      "A": "top == -1",
+      "B": "top == SIZE-1",
+      "C": "top == 0",
+      "D": "top > SIZE"
+    },
+    "correct_answer": "B"
+  },
+  {
+    "id": 33,
+    "question": "For an array stack, which code pattern correctly performs pop when the stack is non-empty?",
+    "options": {
+      "A": "return stack[top--];",
+      "B": "return stack[++top];",
+      "C": "return stack[top+1];",
+      "D": "stack[--top] = 0;"
+    },
+    "correct_answer": "A"
+  },
+  {
+    "id": 34,
+    "question": "Suppose a queue uses front and rear indices, initially front = rear = -1. Which is a common first enqueue action in a simple array implementation?",
+    "options": {
+      "A": "Set front = rear = 0 and store the element",
+      "B": "Set front = rear = -1 permanently",
+      "C": "Decrement both indices",
+      "D": "Set only front = -2"
+    },
+    "correct_answer": "A"
+  },
+  {
+    "id": 35,
+    "question": "Which pseudocode correctly inserts a node at the beginning of a singly linked list?",
+    "options": {
+      "A": "new->next = head; head = new;",
+      "B": "head->next = new; new = head;",
+      "C": "new->next = NULL; head = NULL;",
+      "D": "head = head->next; new->next = head;"
+    },
+    "correct_answer": "A"
+  },
+  {
+    "id": 36,
+    "question": "Which pseudocode correctly deletes the first node of a non-empty singly linked list?",
+    "options": {
+      "A": "temp = head; head = head->next; free(temp);",
+      "B": "head = NULL; free(head);",
+      "C": "temp = head->next; head = temp->next;",
+      "D": "free(head->next); head = head->next;"
+    },
+    "correct_answer": "A"
+  },
+  {
+    "id": 37,
+    "question": "In the following linked-list traversal, what is the stopping condition for a non-circular list? temp = head; while (____) { temp = temp->next; }",
+    "options": {
+      "A": "temp == NULL",
+      "B": "temp != NULL",
+      "C": "temp == head",
+      "D": "temp->next == head"
+    },
+    "correct_answer": "B"
+  },
+  {
+    "id": 38,
+    "question": "For a circular linked list with pointer head, a traversal can commonly stop when:",
+    "options": {
+      "A": "temp == NULL",
+      "B": "temp->next == NULL",
+      "C": "temp becomes head again after processing a node",
+      "D": "temp becomes -1"
+    },
+    "correct_answer": "C"
+  },
+  {
+    "id": 39,
+    "question": "If a doubly linked-list node q is inserted between p and r, which set of updates is required?",
+    "options": {
+      "A": "p->next=q; q->prev=p; q->next=r; r->prev=q",
+      "B": "p->prev=q only",
+      "C": "q->next=p only",
+      "D": "r->next=q only"
+    },
+    "correct_answer": "A"
+  },
+  {
+    "id": 40,
+    "question": "What is the postfix evaluation result of 5 2 + 3 *?",
+    "options": {
+      "A": "11",
+      "B": "21",
+      "C": "17",
+      "D": "25"
+    },
+    "correct_answer": "B"
+  },
+  {
+    "id": 41,
+    "question": "A stack receives 1, 2, 3, 4 in that order. Which sequence cannot be produced by popping and possibly pushing these elements, assuming no new input is introduced?",
+    "options": {
+      "A": "4, 3, 2, 1",
+      "B": "2, 1, 4, 3",
+      "C": "3, 1, 4, 2",
+      "D": "1, 2, 3, 4"
+    },
+    "correct_answer": "C"
+  },
+  {
+    "id": 42,
+    "question": "Evaluate the postfix expression: 6 2 / 3 + 4 * .",
+    "options": {
+      "A": "18",
+      "B": "24",
+      "C": "20",
+      "D": "28"
+    },
+    "correct_answer": "B"
+  },
+  {
+    "id": 43,
+    "question": "What is the prefix equivalent of the infix expression (A-B/C)*(A/K-L)?",
+    "options": {
+      "A": "*-A/BC-/AKL",
+      "B": "-*A/BC-/AKL",
+      "C": "*-/ABC-AKL",
+      "D": "-/*ABC/AKL"
+    },
+    "correct_answer": "A"
+  },
+  {
+    "id": 44,
+    "question": "A linked list has n nodes. A pointer to the node immediately preceding a target node is available. What is the time complexity of deleting the target node from a singly linked list?",
+    "options": {
+      "A": "O(n)",
+      "B": "O(log n)",
+      "C": "O(1)",
+      "D": "O(n²)"
+    },
+    "correct_answer": "C"
+  },
+  {
+    "id": 45,
+    "question": "In a circular singly linked list with a tail pointer, where tail->next points to the first node, which operation can be performed in O(1) time?",
+    "options": {
+      "A": "Insert at the beginning",
+      "B": "Search for a particular value",
+      "C": "Delete an arbitrary value",
+      "D": "Sort the list"
+    },
+    "correct_answer": "A"
+  },
+  {
+    "id": 46,
+    "question": "Two sorted polynomials are represented as linked lists in descending order of exponent. What is the time complexity of adding them using a merge-like traversal?",
+    "options": {
+      "A": "O(mn)",
+      "B": "O(m+n)",
+      "C": "O(log(m+n))",
+      "D": "O(m²+n²)"
+    },
+    "correct_answer": "B"
+  },
+  {
+    "id": 47,
+    "question": "A queue implemented using a circular array has capacity N and uses one empty slot to distinguish full from empty. Which condition commonly indicates that the queue is full?",
+    "options": {
+      "A": "rear == front",
+      "B": "(rear + 1) % N == front",
+      "C": "rear == N",
+      "D": "front == -1"
+    },
+    "correct_answer": "B"
+  },
+  {
+    "id": 48,
+    "question": "Which statement correctly describes why a naive array-based linear queue may report overflow even when unused positions exist at the beginning?",
+    "options": {
+      "A": "Because arrays cannot store integers",
+      "B": "Because rear reaches the last array position and the implementation does not reuse freed positions",
+      "C": "Because front always equals rear",
+      "D": "Because dequeue increases rear"
+    },
+    "correct_answer": "B"
+  },
+  {
+    "id": 49,
+    "question": "A singly linked list is modified so that the last node points back to the first. If traversal is implemented as while (temp != NULL), what is the likely result?",
+    "options": {
+      "A": "It visits exactly one node",
+      "B": "It terminates normally",
+      "C": "It can loop indefinitely because temp never becomes NULL",
+      "D": "It causes immediate stack overflow"
+    },
+    "correct_answer": "C"
+  },
+  {
+    "id": 50,
+    "question": "A postfix expression evaluator uses integer division. Evaluate: 8 3 / 2 * 5 + . Assuming integer division, what is the result?",
+    "options": {
+      "A": "9",
+      "B": "10",
+      "C": "11",
+      "D": "12"
+    },
+    "correct_answer": "C"
+  }
+]

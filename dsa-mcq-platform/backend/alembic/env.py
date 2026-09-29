@@ -22,7 +22,7 @@ from app.models import Base
 from app.config import settings
 
 target_metadata = Base.metadata
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+config.set_main_option("sqlalchemy.url", settings.sqlalchemy_database_url)
 # ... etc.
 
 

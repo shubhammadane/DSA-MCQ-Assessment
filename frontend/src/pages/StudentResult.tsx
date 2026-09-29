@@ -39,13 +39,20 @@ export const StudentResult: React.FC = () => {
 
   if (!result) {
     return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center text-white">
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-white space-y-4">
         <p>Result not found.</p>
+        <button
+          onClick={() => navigate('/')}
+          className="px-4 py-2 bg-slate-800 text-slate-300 rounded-xl"
+        >
+          Return to Portal
+        </button>
       </div>
     );
   }
 
   const { student, attempt, answers } = result;
+  const isTimedOut = attempt.status === 'timed_out';
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 py-8 px-4 md:px-8">
@@ -58,9 +65,15 @@ export const StudentResult: React.FC = () => {
           <div className="relative z-10 space-y-6">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
-                <span className="text-xs font-bold uppercase tracking-wider text-sky-400 bg-sky-500/10 px-3 py-1 rounded-full">
-                  Assessment Completed
-                </span>
+                <div className="flex items-center space-x-2">
+                  <span className={`text-xs font-bold uppercase tracking-wider px-3 py-1 rounded-full ${
+                    isTimedOut
+                      ? 'bg-amber-500/10 text-amber-400 border border-amber-500/30'
+                      : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+                  }`}>
+                    {isTimedOut ? 'Assessment Timed Out (Auto-Submitted)' : 'Assessment Completed'}
+                  </span>
+                </div>
                 <h1 className="text-2xl md:text-3xl font-extrabold text-white mt-2">Test Score Summary</h1>
               </div>
               <button
@@ -115,7 +128,7 @@ export const StudentResult: React.FC = () => {
               </div>
 
               <div className="bg-slate-950 border border-slate-800 p-5 rounded-2xl text-center space-y-1">
-                <span className="text-xs text-slate-400 uppercase font-medium">Wrong</span>
+                <span className="text-xs text-slate-400 uppercase font-medium">Wrong / Unanswered</span>
                 <p className="text-2xl md:text-3xl font-black text-rose-500">{attempt.wrong_answers}</p>
               </div>
             </div>
@@ -125,7 +138,7 @@ export const StudentResult: React.FC = () => {
         <div className="space-y-6">
           <div className="flex items-center justify-between">
             <h2 className="text-xl font-bold text-white">Question-Wise Review</h2>
-            <span className="text-xs text-slate-400">Showing all 50 questions</span>
+            <span className="text-xs text-slate-400">Showing all {attempt.total_questions} questions</span>
           </div>
 
           <div className="space-y-4">
@@ -161,29 +174,60 @@ export const StudentResult: React.FC = () => {
                     {ans.question}
                   </p>
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
-                    <div
-                      className={`p-3 rounded-xl border text-sm flex items-center justify-between ${
-                        isCorrect
-                          ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-300'
-                          : 'bg-rose-500/10 border-rose-500/40 text-rose-300'
-                      }`}
-                    >
-                      <span className="text-xs uppercase font-semibold text-slate-400">Your Answer:</span>
-                      <span className="font-bold">{ans.selected_answer || 'Not Answered'}</span>
-                    </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+                    {Object.entries(ans.options).map(([optKey, optVal]) => {
+                      const isSelected = ans.selected_answer === optKey;
+                      const isAuthoritative = ans.correct_answer === optKey;
 
-                    <div className="p-3 rounded-xl border border-sky-500/30 bg-sky-500/10 text-sky-300 text-sm flex items-center justify-between">
-                      <span className="text-xs uppercase font-semibold text-slate-400">Correct Answer:</span>
-                      <span className="font-bold">{ans.correct_answer}</span>
-                    </div>
+                      let optClass = 'bg-slate-950 border-slate-800 text-slate-400';
+                      if (isAuthoritative) {
+                        optClass = 'bg-emerald-500/10 border-emerald-500/50 text-emerald-300 font-semibold ring-1 ring-emerald-500/30';
+                      } else if (isSelected && !isAuthoritative) {
+                        optClass = 'bg-rose-500/10 border-rose-500/50 text-rose-300 font-semibold ring-1 ring-rose-500/30';
+                      }
+
+                      return (
+                        <div
+                          key={optKey}
+                          className={`p-3.5 rounded-xl border flex items-start space-x-3 text-sm ${optClass}`}
+                        >
+                          <span
+                            className={`w-6 h-6 rounded-md flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5 ${
+                              isAuthoritative
+                                ? 'bg-emerald-500 text-white'
+                                : isSelected
+                                ? 'bg-rose-500 text-white'
+                                : 'bg-slate-800 text-slate-400'
+                            }`}
+                          >
+                            {optKey}
+                          </span>
+                          <span className="leading-snug">{optVal}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-4 pt-2 text-xs border-t border-slate-800/80">
+                    <span className="text-slate-400">
+                      Your Selected Answer:{' '}
+                      <span className={`font-bold ${isCorrect ? 'text-emerald-400' : 'text-rose-400'}`}>
+                        {ans.selected_answer ? `Option ${ans.selected_answer}` : 'Not Attempted'}
+                      </span>
+                    </span>
+                    <span className="text-slate-600">•</span>
+                    <span className="text-slate-400">
+                      Correct Key:{' '}
+                      <span className="font-bold text-emerald-400">
+                        Option {ans.correct_answer}
+                      </span>
+                    </span>
                   </div>
                 </div>
               );
             })}
           </div>
         </div>
-
       </div>
     </div>
   );

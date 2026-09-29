@@ -19,6 +19,17 @@ class Settings(BaseSettings):
     
     ADMIN_USERNAME: str = os.getenv("ADMIN_USERNAME", "admin")
     ADMIN_PASSWORD: str = os.getenv("ADMIN_PASSWORD", "admin123")
+    
+    FRONTEND_URL: str = os.getenv("FRONTEND_URL", "")
+
+    @property
+    def sqlalchemy_database_url(self) -> str:
+        url = self.DATABASE_URL
+        if url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql+psycopg2://", 1)
+        elif url.startswith("postgresql://") and not url.startswith("postgresql+"):
+            url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
+        return url
 
     class Config:
         env_file = [

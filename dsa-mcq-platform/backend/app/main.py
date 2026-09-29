@@ -12,11 +12,26 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Enable CORS for React Vite frontend
+from app.config import settings
+
+# Configure CORS for local dev and production Vercel frontend
+origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+if settings.FRONTEND_URL:
+    for u in settings.FRONTEND_URL.split(","):
+        trimmed = u.strip()
+        if trimmed and trimmed not in origins:
+            origins.append(trimmed)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=origins if settings.FRONTEND_URL else ["*"],
+    allow_origin_regex=r"https:\/\/.*\.vercel\.app" if settings.FRONTEND_URL else None,
+    allow_credentials=True if settings.FRONTEND_URL else False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

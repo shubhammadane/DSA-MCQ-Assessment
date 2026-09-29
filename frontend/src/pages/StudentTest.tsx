@@ -1,8 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ChevronLeft, ChevronRight, Send, HelpCircle, CheckCircle2, Clock } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Send, HelpCircle, CheckCircle2, Clock, AlertTriangle } from 'lucide-react';
 import api from '../services/api';
-import type { Question } from '../types';
+import type { Question, AttemptStatus } from '../types';
 
 export const StudentTest: React.FC = () => {
   const { attemptId } = useParams<{ attemptId: string }>();
@@ -16,27 +16,113 @@ export const StudentTest: React.FC = () => {
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [studentInfo, setStudentInfo] = useState<{ name: string; enrollment_no: string; department: string } | null>(null);
 
+  // Timer states
+  const [remainingSeconds, setRemainingSeconds] = useState<number | null>(null);
+  const [isTimedOut, setIsTimedOut] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const isAutoSubmittingRef = useRef<boolean>(false);
+
+  const handleAutoSubmit = useCallback(async () => {
+    if (isAutoSubmittingRef.current || !attemptId) return;
+    isAutoSubmittingRef.current = true;
+    setIsTimedOut(true);
+    setSubmitting(true);
+
+    try {
+      // Attempt to save any uncommitted local answers first
+      const payloadAnswers = Object.entries(answers).map(([qNum, sel]) => ({
+        question_number: parseInt(qNum, 10),
+        selected_answer: sel
+      }));
+      if (payloadAnswers.length > 0) {
+        await api.post(`/attempts/${attemptId}/answers`, { answers: payloadAnswers }).catch(() => {});
+      }
+      await api.post(`/attempts/${attemptId}/submit`).catch(() => {});
+      navigate(`/result/${attemptId}`);
+    } catch (err) {
+      console.error('Auto-submission error:', err);
+      navigate(`/result/${attemptId}`);
+    }
+  }, [attemptId, answers, navigate]);
+
   useEffect(() => {
     const cachedStudent = sessionStorage.getItem('student');
     if (cachedStudent) {
       setStudentInfo(JSON.parse(cachedStudent));
     }
 
-    const fetchQuestions = async () => {
+    if (!attemptId) {
+      navigate('/');
+      return;
+    }
+
+    const initTest = async () => {
       try {
-        const response = await api.get('/questions');
-        setQuestions(response.data);
-      } catch (err) {
-        console.error('Failed to load questions:', err);
+        // 1. Fetch attempt status (authoritative server-side deadline & recorded answers)
+        const statusRes = await api.get<AttemptStatus>(`/attempts/${attemptId}/status`);
+        const statusData = statusRes.data;
+
+        if (statusData.status === 'completed' || statusData.status === 'timed_out') {
+          navigate(`/result/${attemptId}`);
+          return;
+        }
+
+        // Set remaining seconds from server
+        setRemainingSeconds(statusData.remaining_seconds);
+
+        // Preload existing answers if any
+        if (statusData.answers) {
+          const preloaded: { [qNum: number]: string } = {};
+          Object.entries(statusData.answers).forEach(([k, v]) => {
+            if (v) preloaded[parseInt(k, 10)] = v;
+          });
+          setAnswers(preloaded);
+        }
+
+        // 2. Fetch questions assigned to this specific attempt
+        const qRes = await api.get<Question[]>(`/questions?attempt_id=${attemptId}`);
+        setQuestions(qRes.data);
+      } catch (err: any) {
+        console.error('Failed to initialize test:', err);
+        if (err.response?.status === 404) {
+          navigate('/');
+        }
       } finally {
         setLoading(false);
       }
     };
 
-    fetchQuestions();
-  }, []);
+    initTest();
+  }, [attemptId, navigate]);
+
+  // Timer countdown countdown effect
+  useEffect(() => {
+    if (remainingSeconds === null || isTimedOut) return;
+
+    if (remainingSeconds <= 0) {
+      handleAutoSubmit();
+      return;
+    }
+
+    timerRef.current = setInterval(() => {
+      setRemainingSeconds((prev) => {
+        if (prev === null || prev <= 1) {
+          if (timerRef.current) clearInterval(timerRef.current);
+          handleAutoSubmit();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [remainingSeconds, isTimedOut, handleAutoSubmit]);
 
   const handleSelectOption = (optionKey: string) => {
+    if (isTimedOut || submitting) return;
+
     const qNum = currentIndex + 1;
     const updated = { ...answers, [qNum]: optionKey };
     setAnswers(updated);
@@ -44,45 +130,73 @@ export const StudentTest: React.FC = () => {
     if (attemptId) {
       api.post(`/attempts/${attemptId}/answers`, {
         answers: [{ question_number: qNum, selected_answer: optionKey }]
-      }).catch(err => console.error('Auto-save error:', err));
+      }).catch((err) => {
+        console.error('Auto-save error:', err);
+        if (err.response?.status === 400 && err.response.data?.detail?.includes('expired')) {
+          handleAutoSubmit();
+        }
+      });
     }
   };
 
   const handleConfirmSubmit = async () => {
-    if (!attemptId) return;
+    if (!attemptId || submitting) return;
     setSubmitting(true);
     setShowConfirmModal(false);
 
     try {
       const payloadAnswers = Object.entries(answers).map(([qNum, sel]) => ({
-        question_number: parseInt(qNum),
+        question_number: parseInt(qNum, 10),
         selected_answer: sel
       }));
 
-      await api.post(`/attempts/${attemptId}/answers`, { answers: payloadAnswers });
+      await api.post(`/attempts/${attemptId}/answers`, { answers: payloadAnswers }).catch(() => {});
       await api.post(`/attempts/${attemptId}/submit`);
 
       navigate(`/result/${attemptId}`);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Submit error:', err);
       setSubmitting(false);
-      alert('Failed to submit test. Please check connection and try again.');
+      if (err.response?.status === 400 && err.response.data?.detail?.includes('expired')) {
+        handleAutoSubmit();
+      } else {
+        alert('Failed to submit test. Please check connection and try again.');
+      }
     }
+  };
+
+  const formatTimer = (totalSecs: number | null): string => {
+    if (totalSecs === null || totalSecs < 0) return '--:--';
+    const hrs = Math.floor(totalSecs / 3600);
+    const mins = Math.floor((totalSecs % 3600) / 60);
+    const secs = totalSecs % 60;
+
+    if (hrs > 0) {
+      return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    }
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
   if (loading) {
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col justify-center items-center text-white space-y-4">
         <div className="w-12 h-12 border-4 border-sky-500 border-t-transparent rounded-full animate-spin"></div>
-        <p className="text-slate-400 font-medium">Loading Assessment Questions...</p>
+        <p className="text-slate-400 font-medium">Loading Assessment Questions & Syncing Timer...</p>
       </div>
     );
   }
 
   if (questions.length === 0) {
     return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center text-white">
-        <p>No questions available.</p>
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-white space-y-4 p-4">
+        <AlertTriangle className="w-12 h-12 text-rose-400" />
+        <p className="text-lg font-semibold">No questions available for this assessment.</p>
+        <button
+          onClick={() => navigate('/')}
+          className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-sm"
+        >
+          Return to Portal
+        </button>
       </div>
     );
   }
@@ -91,6 +205,9 @@ export const StudentTest: React.FC = () => {
   const currentQNum = currentIndex + 1;
   const totalQuestions = questions.length;
   const answeredCount = Object.keys(answers).length;
+
+  const isLowTime = remainingSeconds !== null && remainingSeconds <= 300; // <= 5 minutes
+  const isCriticalTime = remainingSeconds !== null && remainingSeconds <= 60; // <= 1 minute
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
@@ -101,36 +218,48 @@ export const StudentTest: React.FC = () => {
           </div>
           <div>
             <h1 className="font-bold text-white text-lg leading-tight">Data Structures MCQ Assessment</h1>
-            <p className="text-xs text-slate-400">Total Questions: {totalQuestions} | Marks: 50</p>
+            <p className="text-xs text-slate-400">Total Questions: {totalQuestions} | Marks: {totalQuestions}</p>
           </div>
         </div>
 
-        {studentInfo && (
-          <div className="hidden md:flex items-center space-x-6 text-sm bg-slate-950 px-4 py-2 rounded-xl border border-slate-800">
-            <div>
-              <span className="text-slate-500 block text-xs">Student</span>
-              <span className="font-semibold text-sky-400">{studentInfo.name}</span>
-            </div>
-            <div className="h-6 w-px bg-slate-800"></div>
-            <div>
-              <span className="text-slate-500 block text-xs">Enrollment</span>
-              <span className="font-semibold text-slate-300">{studentInfo.enrollment_no}</span>
-            </div>
-            <div className="h-6 w-px bg-slate-800"></div>
-            <div>
-              <span className="text-slate-500 block text-xs">Department</span>
-              <span className="font-semibold text-slate-300">{studentInfo.department}</span>
-            </div>
+        {/* Real-time Countdown Timer Badge */}
+        <div className="flex items-center space-x-4">
+          <div
+            className={`flex items-center space-x-2 px-4 py-2 rounded-xl border font-mono font-bold text-sm transition-all ${
+              isCriticalTime
+                ? 'bg-rose-500/20 border-rose-500 text-rose-400 animate-pulse ring-2 ring-rose-500/40'
+                : isLowTime
+                ? 'bg-amber-500/10 border-amber-500/40 text-amber-400'
+                : 'bg-slate-950 border-slate-800 text-sky-400'
+            }`}
+          >
+            <Clock className={`w-4 h-4 ${isCriticalTime ? 'text-rose-400' : isLowTime ? 'text-amber-400' : 'text-sky-400'}`} />
+            <span>Time Left: {formatTimer(remainingSeconds)}</span>
           </div>
-        )}
 
-        <button
-          onClick={() => setShowConfirmModal(true)}
-          className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-xl shadow-lg shadow-emerald-600/20 flex items-center space-x-2 transition-all ml-auto"
-        >
-          <Send className="w-4 h-4" />
-          <span>Submit Test</span>
-        </button>
+          {studentInfo && (
+            <div className="hidden lg:flex items-center space-x-6 text-sm bg-slate-950 px-4 py-2 rounded-xl border border-slate-800">
+              <div>
+                <span className="text-slate-500 block text-xs">Student</span>
+                <span className="font-semibold text-sky-400">{studentInfo.name}</span>
+              </div>
+              <div className="h-6 w-px bg-slate-800"></div>
+              <div>
+                <span className="text-slate-500 block text-xs">Enrollment</span>
+                <span className="font-semibold text-slate-300">{studentInfo.enrollment_no}</span>
+              </div>
+            </div>
+          )}
+
+          <button
+            onClick={() => setShowConfirmModal(true)}
+            disabled={submitting}
+            className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-xl shadow-lg shadow-emerald-600/20 flex items-center space-x-2 transition-all ml-auto disabled:opacity-50"
+          >
+            <Send className="w-4 h-4" />
+            <span>Submit Test</span>
+          </button>
+        </div>
       </header>
 
       <div className="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6 grid grid-cols-1 lg:grid-cols-4 gap-6">
@@ -157,6 +286,7 @@ export const StudentTest: React.FC = () => {
                   <button
                     key={key}
                     onClick={() => handleSelectOption(key)}
+                    disabled={isTimedOut || submitting}
                     className={`w-full text-left p-4 rounded-xl border transition-all flex items-start space-x-4 ${
                       isSelected
                         ? 'bg-sky-500/10 border-sky-500 text-white ring-1 ring-sky-500'
@@ -204,7 +334,7 @@ export const StudentTest: React.FC = () => {
 
         <div className="lg:col-span-1 bg-slate-900 border border-slate-800 rounded-2xl p-6 flex flex-col space-y-6 h-fit">
           <h3 className="text-sm font-bold text-slate-200 uppercase tracking-wider">Question Navigation</h3>
-          
+
           <div className="grid grid-cols-5 gap-2 max-h-96 overflow-y-auto pr-1">
             {questions.map((q, idx) => {
               const qNum = idx + 1;
@@ -256,7 +386,7 @@ export const StudentTest: React.FC = () => {
               </div>
               <h3 className="text-xl font-bold text-white">Submit Test Confirmation</h3>
               <p className="text-sm text-slate-400">
-                Are you sure you want to submit the test?
+                Are you sure you want to submit the assessment?
               </p>
               <p className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2 mt-2">
                 You have answered <span className="font-bold">{answeredCount}</span> of <span className="font-bold">{totalQuestions}</span> questions.

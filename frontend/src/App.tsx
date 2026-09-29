@@ -20,6 +20,8 @@ export const App: React.FC = () => {
         <Route path="/admin/login" element={<AdminLogin />} />
         <Route path="/admin/dashboard" element={<AdminDashboard />} />
         <Route path="/admin/students" element={<AdminDashboard />} />
+        <Route path="/admin/questions" element={<AdminDashboard />} />
+        <Route path="/admin/settings" element={<AdminDashboard />} />
         <Route path="/admin/student/:studentId" element={<AdminStudentDetails />} />
 
         {/* Catch-all Fallback */}
