@@ -34,6 +34,11 @@ export const AdminDashboard: React.FC = () => {
   const [deleteSubmitting, setDeleteSubmitting] = useState(false);
   const [questionNotification, setQuestionNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
+  // Delete Attempt State
+  const [deletingAttempt, setDeletingAttempt] = useState<StudentSummary | null>(null);
+  const [deleteAttemptSubmitting, setDeleteAttemptSubmitting] = useState(false);
+  const [studentNotification, setStudentNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
   // Question Form
   const [formQuestionText, setFormQuestionText] = useState('');
   const [formOptA, setFormOptA] = useState('');
@@ -271,6 +276,35 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
+  const confirmDeleteAttempt = async () => {
+    if (!deletingAttempt || !deletingAttempt.attempt_id) return;
+    setDeleteAttemptSubmitting(true);
+    try {
+      await api.delete(`/admin/attempts/${deletingAttempt.attempt_id}`);
+      setStudentNotification({
+        type: 'success',
+        message: `Assessment record for ${deletingAttempt.name} (${deletingAttempt.enrollment_no}) permanently deleted successfully.`
+      });
+      setDeletingAttempt(null);
+      const [statsRes, studentsRes] = await Promise.all([
+        api.get('/admin/dashboard'),
+        api.get('/admin/students')
+      ]);
+      setStats(statsRes.data);
+      setStudents(studentsRes.data);
+    } catch (err: any) {
+      console.error('Failed to delete assessment attempt:', err);
+      const errorMsg = err.response?.data?.detail || 'Failed to delete assessment record.';
+      setDeletingAttempt(null);
+      setStudentNotification({
+        type: 'error',
+        message: errorMsg
+      });
+    } finally {
+      setDeleteAttemptSubmitting(false);
+    }
+  };
+
   // Assessment Settings Save Handler
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -471,10 +505,35 @@ export const AdminDashboard: React.FC = () => {
             )}
 
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-6">
+              {/* Student Records Notification Banner */}
+              {studentNotification && (
+                <div className={`p-4 rounded-xl text-xs flex items-center justify-between border ${
+                  studentNotification.type === 'success'
+                    ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                    : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+                }`}>
+                  <div className="flex items-center space-x-2.5">
+                    {studentNotification.type === 'success' ? (
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                    ) : (
+                      <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                    )}
+                    <span className="font-semibold">{studentNotification.message}</span>
+                  </div>
+                  <button
+                    onClick={() => setStudentNotification(null)}
+                    className="text-slate-400 hover:text-white p-1 transition-colors"
+                    title="Dismiss"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
+
               <div className="flex flex-wrap items-center justify-between gap-4">
                 <div>
                   <h2 className="text-xl font-bold text-white">Student Assessment Records</h2>
-                  <p className="text-xs text-slate-400">Filter students and inspect full question performance</p>
+                  <p className="text-xs text-slate-400">Filter students, inspect performance, or delete assessment records</p>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2">
@@ -583,14 +642,29 @@ export const AdminDashboard: React.FC = () => {
                             {s.attempt_date ? new Date(s.attempt_date).toLocaleString() : 'N/A'}
                           </td>
                           <td className="py-3.5 px-4 text-center">
-                            {(s.status === 'completed' || s.status === 'timed_out') && s.student_id ? (
-                              <button
-                                onClick={() => navigate(`/admin/student/${s.student_id}`)}
-                                className="inline-flex items-center space-x-1.5 px-3 py-1.5 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 rounded-lg text-xs font-semibold transition-colors"
-                              >
-                                <Eye className="w-3.5 h-3.5" />
-                                <span>Inspect</span>
-                              </button>
+                            {s.attempt_id ? (
+                              <div className="inline-flex items-center space-x-1.5">
+                                <button
+                                  onClick={() => navigate(`/admin/student/${s.student_id}`)}
+                                  className="inline-flex items-center space-x-1 px-2.5 py-1.5 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 rounded-lg text-xs font-semibold transition-colors"
+                                  title="Inspect Assessment"
+                                >
+                                  <Eye className="w-3.5 h-3.5" />
+                                  <span>Inspect</span>
+                                </button>
+
+                                <button
+                                  onClick={() => {
+                                    setStudentNotification(null);
+                                    setDeletingAttempt(s);
+                                  }}
+                                  className="inline-flex items-center space-x-1 px-2 py-1.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 rounded-lg text-xs font-semibold transition-colors"
+                                  title="Delete Assessment Record"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                  <span>Delete</span>
+                                </button>
+                              </div>
                             ) : (
                               <span className="text-xs text-slate-600">N/A</span>
                             )}
@@ -1259,7 +1333,7 @@ export const AdminDashboard: React.FC = () => {
         </div>
       )}
 
-      {/* ==================== DELETE CONFIRMATION MODAL ==================== */}
+      {/* ==================== DELETE QUESTION CONFIRMATION MODAL ==================== */}
       {deletingQuestion && (
         <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-md w-full space-y-5 shadow-2xl">
@@ -1307,6 +1381,71 @@ export const AdminDashboard: React.FC = () => {
               >
                 <Trash2 className="w-4 h-4" />
                 <span>{deleteSubmitting ? 'Deleting...' : 'Delete Permanently'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ==================== DELETE ATTEMPT CONFIRMATION MODAL ==================== */}
+      {deletingAttempt && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-md w-full space-y-5 shadow-2xl">
+            <div className="text-center space-y-2">
+              <div className="inline-flex p-3 bg-rose-500/10 text-rose-500 rounded-full mb-1">
+                <Trash2 className="w-8 h-8" />
+              </div>
+              <h3 className="text-lg font-bold text-white">Delete Assessment Record?</h3>
+              <p className="text-xs text-slate-400">
+                Are you sure you want to permanently delete this assessment attempt?
+              </p>
+            </div>
+
+            <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 space-y-2 text-left text-xs">
+              <div className="flex items-center justify-between py-1 border-b border-slate-800/80">
+                <span className="font-bold text-slate-400">Enrollment No:</span>
+                <span className="font-mono text-indigo-400 font-bold">{deletingAttempt.enrollment_no}</span>
+              </div>
+              <div className="flex items-center justify-between py-1 border-b border-slate-800/80">
+                <span className="font-bold text-slate-400">Student Name:</span>
+                <span className="text-white font-semibold">{deletingAttempt.name}</span>
+              </div>
+              <div className="flex items-center justify-between py-1 border-b border-slate-800/80">
+                <span className="font-bold text-slate-400">Score:</span>
+                <span className="text-white font-semibold">{deletingAttempt.score !== null ? deletingAttempt.score : 'N/A'}</span>
+              </div>
+              <div className="flex items-center justify-between py-1 border-b border-slate-800/80">
+                <span className="font-bold text-slate-400">Percentage:</span>
+                <span className="text-emerald-400 font-bold">{deletingAttempt.percentage !== null ? `${deletingAttempt.percentage}%` : 'N/A'}</span>
+              </div>
+              <div className="flex items-center justify-between py-1">
+                <span className="font-bold text-slate-400">Attempt Date:</span>
+                <span className="text-slate-300">{deletingAttempt.attempt_date ? new Date(deletingAttempt.attempt_date).toLocaleString() : 'N/A'}</span>
+              </div>
+            </div>
+
+            <div className="text-[11px] text-amber-400/90 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2.5 flex items-start space-x-2">
+              <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+              <span>This permanently deletes this examination attempt and its submitted answers. The student account remains intact, allowing them to take a new assessment.</span>
+            </div>
+
+            <div className="flex items-center space-x-3">
+              <button
+                type="button"
+                onClick={() => setDeletingAttempt(null)}
+                disabled={deleteAttemptSubmitting}
+                className="flex-1 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold rounded-xl text-xs transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmDeleteAttempt}
+                disabled={deleteAttemptSubmitting}
+                className="flex-1 py-2.5 bg-red-600 hover:bg-red-500 text-white font-bold rounded-xl text-xs transition-all shadow-lg shadow-red-600/30 flex items-center justify-center space-x-1.5"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>{deleteAttemptSubmitting ? 'Deleting...' : 'Delete Permanently'}</span>
               </button>
             </div>
           </div>

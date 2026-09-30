@@ -831,6 +831,34 @@ def deactivate_question_endpoint(question_id: int, admin: str = Depends(get_curr
     db.refresh(q)
     return q
 
+# 13B. Admin Delete Assessment Attempt
+@router.delete("/admin/attempts/{attempt_id}")
+def delete_attempt(
+    attempt_id: int,
+    admin: str = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    # 1. Check if attempt exists
+    attempt = db.query(models.Attempt).filter(models.Attempt.id == attempt_id).first()
+    if not attempt:
+        raise HTTPException(status_code=404, detail="Assessment attempt not found.")
+
+    student_id = attempt.student_id
+
+    # 2. Explicitly delete dependent student answer records to guarantee zero orphan records
+    db.query(models.StudentAnswer).filter(models.StudentAnswer.attempt_id == attempt_id).delete(synchronize_session=False)
+
+    # 3. Permanently delete the attempt record itself (preserves student account, questions, and other attempts)
+    db.delete(attempt)
+    db.commit()
+
+    return {
+        "message": "Assessment attempt permanently deleted successfully",
+        "attempt_id": attempt_id,
+        "student_id": student_id
+    }
+
+
 # 14. Admin Export Results (Excel)
 def get_admin_from_request(token: Optional[str] = None, authorization: Optional[str] = Header(None)) -> str:
     auth_token = None
