@@ -46,6 +46,8 @@ A full-stack, college-grade **Data Structures & Algorithms MCQ Assessment Web Ap
 - **Excel/CSV Data Export**:
   - **Summary Export**: Excel workbook containing Enrollment No, Name, Department, Score, Percentage, Correct/Wrong counts, and Submission Date.
   - **Detailed Answer Export**: Excel workbook containing question-by-question student responses for all students.
+<img width="1894" height="925" alt="Std" src="https://github.com/user-attachments/assets/86a9ef0f-0b8e-4713-a015-34f9549f30ac" />
+
 <img width="1909" height="935" alt="Addd" src="https://github.com/user-attachments/assets/e6d2f448-8f17-4693-887a-f4fa68a27df5" />
 
 ---
