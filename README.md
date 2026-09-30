@@ -125,5 +125,5 @@ npm run dev
 | Parameter | Value |
 | --- | --- |
 | **Login Route** | `/admin/login` |
-| **Username** | `admin` |
-| **Password** | `admin123` |
+| **Username** | `` |
+| **Password** | `` |
