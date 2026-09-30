@@ -796,8 +796,31 @@ def toggle_question_status(
     return q
 
 @router.delete("/admin/questions/{question_id}")
-def deactivate_question(question_id: int, admin: str = Depends(get_current_admin), db: Session = Depends(get_db)):
-    # Soft deletion: deactivate question so historical attempts are never broken
+def delete_question(question_id: int, admin: str = Depends(get_current_admin), db: Session = Depends(get_db)):
+    # 1. Check if question exists
+    q = db.query(models.Question).filter(models.Question.id == question_id).first()
+    if not q:
+        raise HTTPException(status_code=404, detail="Question not found.")
+
+    # 2. Database Safety: Check whether question is referenced by any existing student attempt/answer records
+    referenced = db.query(models.StudentAnswer).filter(
+        (models.StudentAnswer.question_id == question_id) |
+        (models.StudentAnswer.question_number == question_id)
+    ).first()
+
+    if referenced:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This question cannot be permanently deleted because it is referenced by existing assessment records. Deactivate it instead."
+        )
+
+    # 3. Safe to permanently delete since no student attempts reference it
+    db.delete(q)
+    db.commit()
+    return {"message": "Question permanently deleted successfully", "id": question_id}
+
+@router.post("/admin/questions/{question_id}/deactivate", response_model=schemas.AdminQuestionOut)
+def deactivate_question_endpoint(question_id: int, admin: str = Depends(get_current_admin), db: Session = Depends(get_db)):
     q = db.query(models.Question).filter(models.Question.id == question_id).first()
     if not q:
         raise HTTPException(status_code=404, detail="Question not found.")
@@ -805,7 +828,8 @@ def deactivate_question(question_id: int, admin: str = Depends(get_current_admin
     q.is_active = False
     q.updated_at = datetime.utcnow()
     db.commit()
-    return {"message": "Question deactivated successfully", "id": question_id, "is_active": False}
+    db.refresh(q)
+    return q
 
 # 14. Admin Export Results (Excel)
 def get_admin_from_request(token: Optional[str] = None, authorization: Optional[str] = Header(None)) -> str:

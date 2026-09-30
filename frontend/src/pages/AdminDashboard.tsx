@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   Users, CheckCircle2, Award, Percent, LogOut, Download, FileText,
   UserCheck, Search, Eye, HelpCircle, Sliders, Plus, Edit3, Power,
-  AlertTriangle, Check, X, Shield, RefreshCw
+  AlertTriangle, Check, X, Shield, RefreshCw, Trash2
 } from 'lucide-react';
 import api, { API_BASE_URL } from '../services/api';
 import type { AdminStats, StudentSummary, AdminQuestion, AssessmentSettings } from '../types';
@@ -30,6 +30,9 @@ export const AdminDashboard: React.FC = () => {
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingQuestion, setEditingQuestion] = useState<AdminQuestion | null>(null);
   const [deactivatingQuestion, setDeactivatingQuestion] = useState<AdminQuestion | null>(null);
+  const [deletingQuestion, setDeletingQuestion] = useState<AdminQuestion | null>(null);
+  const [deleteSubmitting, setDeleteSubmitting] = useState(false);
+  const [questionNotification, setQuestionNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   // Question Form
   const [formQuestionText, setFormQuestionText] = useState('');
@@ -213,23 +216,58 @@ export const AdminDashboard: React.FC = () => {
 
   const handleToggleStatus = async (q: AdminQuestion) => {
     try {
-      await api.patch(`/admin/questions/${q.id}/status`, { is_active: !q.is_active });
+      const newStatus = !q.is_active;
+      await api.patch(`/admin/questions/${q.id}/status`, { is_active: newStatus });
+      setQuestionNotification({
+        type: 'success',
+        message: `Question #${q.id} ${newStatus ? 'reactivated' : 'deactivated'} successfully.`
+      });
       await loadQuestions();
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to toggle status:', err);
-      alert('Failed to update question status.');
+      setQuestionNotification({
+        type: 'error',
+        message: err.response?.data?.detail || 'Failed to update question status.'
+      });
     }
   };
 
   const confirmDeactivate = async () => {
     if (!deactivatingQuestion) return;
     try {
-      await api.delete(`/admin/questions/${deactivatingQuestion.id}`);
+      await api.patch(`/admin/questions/${deactivatingQuestion.id}/status`, { is_active: false });
+      setQuestionNotification({
+        type: 'success',
+        message: `Question #${deactivatingQuestion.id} deactivated successfully. It will not appear in new assessments.`
+      });
       setDeactivatingQuestion(null);
       await loadQuestions();
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to deactivate question:', err);
-      alert('Failed to deactivate question.');
+      setQuestionNotification({
+        type: 'error',
+        message: err.response?.data?.detail || 'Failed to deactivate question.'
+      });
+      setDeactivatingQuestion(null);
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!deletingQuestion) return;
+    setDeleteSubmitting(true);
+    try {
+      const res = await api.delete(`/admin/questions/${deletingQuestion.id}`);
+      const successMsg = res.data?.message || `Question #${deletingQuestion.id} permanently deleted successfully.`;
+      setDeletingQuestion(null);
+      setQuestionNotification({ type: 'success', message: successMsg });
+      await loadQuestions();
+    } catch (err: any) {
+      console.error('Failed to delete question:', err);
+      const errorMsg = err.response?.data?.detail || 'Failed to permanently delete question.';
+      setDeletingQuestion(null);
+      setQuestionNotification({ type: 'error', message: errorMsg });
+    } finally {
+      setDeleteSubmitting(false);
     }
   };
 
@@ -605,11 +643,36 @@ export const AdminDashboard: React.FC = () => {
 
             {/* Questions Table Card */}
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-6">
+              {/* Notification Banner */}
+              {questionNotification && (
+                <div className={`p-4 rounded-xl text-xs flex items-center justify-between border ${
+                  questionNotification.type === 'success'
+                    ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                    : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+                }`}>
+                  <div className="flex items-center space-x-2.5">
+                    {questionNotification.type === 'success' ? (
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                    ) : (
+                      <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                    )}
+                    <span className="font-semibold">{questionNotification.message}</span>
+                  </div>
+                  <button
+                    onClick={() => setQuestionNotification(null)}
+                    className="text-slate-400 hover:text-white p-1 transition-colors"
+                    title="Dismiss"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
+
               <div className="flex flex-wrap items-center justify-between gap-4">
                 <div>
                   <h2 className="text-xl font-bold text-white">Question Bank Management</h2>
                   <p className="text-xs text-slate-400">
-                    Add, edit, deactivate, or reactivate assessment questions. Deactivated questions will not appear in new assessments.
+                    Add, edit, deactivate, or delete assessment questions. Deactivated questions will not appear in new assessments.
                   </p>
                 </div>
 
@@ -738,6 +801,7 @@ export const AdminDashboard: React.FC = () => {
                           </td>
                           <td className="py-3.5 px-4 text-center">
                             <div className="inline-flex items-center space-x-1.5">
+                              {/* Edit Question */}
                               <button
                                 onClick={() => openEditModal(q)}
                                 className="p-1.5 bg-slate-800 hover:bg-slate-700 text-sky-400 rounded-lg transition-colors"
@@ -746,10 +810,11 @@ export const AdminDashboard: React.FC = () => {
                                 <Edit3 className="w-4 h-4" />
                               </button>
 
+                              {/* Activate / Deactivate */}
                               {q.is_active ? (
                                 <button
                                   onClick={() => setDeactivatingQuestion(q)}
-                                  className="p-1.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 rounded-lg transition-colors"
+                                  className="p-1.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded-lg transition-colors"
                                   title="Deactivate Question"
                                 >
                                   <Power className="w-4 h-4" />
@@ -763,6 +828,18 @@ export const AdminDashboard: React.FC = () => {
                                   <Check className="w-4 h-4" />
                                 </button>
                               )}
+
+                              {/* Delete Question */}
+                              <button
+                                onClick={() => {
+                                  setQuestionNotification(null);
+                                  setDeletingQuestion(q);
+                                }}
+                                className="p-1.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 rounded-lg transition-colors"
+                                title="Delete Question Permanently"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
                             </div>
                           </td>
                         </tr>
@@ -1150,7 +1227,7 @@ export const AdminDashboard: React.FC = () => {
         <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-md w-full space-y-5 shadow-2xl">
             <div className="text-center space-y-2">
-              <div className="inline-flex p-3 bg-rose-500/10 text-rose-400 rounded-full mb-2">
+              <div className="inline-flex p-3 bg-amber-500/10 text-amber-400 rounded-full mb-2">
                 <Power className="w-8 h-8" />
               </div>
               <h3 className="text-lg font-bold text-white">Deactivate Question #{deactivatingQuestion.id}?</h3>
@@ -1164,16 +1241,72 @@ export const AdminDashboard: React.FC = () => {
 
             <div className="flex items-center space-x-3">
               <button
+                type="button"
                 onClick={() => setDeactivatingQuestion(null)}
                 className="flex-1 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold rounded-xl text-xs transition-colors"
               >
                 Cancel
               </button>
               <button
+                type="button"
                 onClick={confirmDeactivate}
-                className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-500 text-white font-semibold rounded-xl text-xs transition-colors"
+                className="flex-1 py-2.5 bg-amber-600 hover:bg-amber-500 text-white font-semibold rounded-xl text-xs transition-colors"
               >
                 Yes, Deactivate
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ==================== DELETE CONFIRMATION MODAL ==================== */}
+      {deletingQuestion && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-md w-full space-y-5 shadow-2xl">
+            <div className="text-center space-y-2">
+              <div className="inline-flex p-3 bg-rose-500/10 text-rose-500 rounded-full mb-1">
+                <Trash2 className="w-8 h-8" />
+              </div>
+              <h3 className="text-lg font-bold text-white">Delete Question?</h3>
+              <p className="text-xs text-slate-400">
+                Are you sure you want to permanently delete this question?
+              </p>
+            </div>
+
+            <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 space-y-2.5 text-left">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-bold text-slate-400">Question ID:</span>
+                <span className="font-mono text-indigo-400 font-bold">#{deletingQuestion.id}</span>
+              </div>
+              <div className="text-xs">
+                <span className="font-bold text-slate-400 block mb-1">Preview:</span>
+                <p className="text-slate-200 line-clamp-3 text-xs bg-slate-900 p-2.5 rounded-lg border border-slate-800/80 leading-relaxed">
+                  {deletingQuestion.question_text}
+                </p>
+              </div>
+              <div className="text-[11px] text-amber-400/90 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2 flex items-start space-x-1.5">
+                <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                <span>Notice: Questions referenced in student exam attempts cannot be deleted to preserve exam integrity. Deactivate instead.</span>
+              </div>
+            </div>
+
+            <div className="flex items-center space-x-3">
+              <button
+                type="button"
+                onClick={() => setDeletingQuestion(null)}
+                disabled={deleteSubmitting}
+                className="flex-1 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold rounded-xl text-xs transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmDelete}
+                disabled={deleteSubmitting}
+                className="flex-1 py-2.5 bg-red-600 hover:bg-red-500 text-white font-bold rounded-xl text-xs transition-all shadow-lg shadow-red-600/30 flex items-center justify-center space-x-1.5"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>{deleteSubmitting ? 'Deleting...' : 'Delete Permanently'}</span>
               </button>
             </div>
           </div>
@@ -1182,3 +1315,4 @@ export const AdminDashboard: React.FC = () => {
     </div>
   );
 };
+

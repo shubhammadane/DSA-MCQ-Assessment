@@ -91,7 +91,7 @@ def run_master_tests():
     print(f"[PASS] 8. Edited question ID={q_id} successfully")
 
     # Deactivate question
-    r = requests.delete(f"{BASE_URL}/admin/questions/{q_id}", headers=headers)
+    r = requests.patch(f"{BASE_URL}/admin/questions/{q_id}/status", headers=headers, json={"is_active": False})
     assert r.status_code == 200
     r = requests.get(f"{BASE_URL}/admin/questions/{q_id}", headers=headers)
     assert r.json()["is_active"] == False
@@ -245,8 +245,13 @@ def run_master_tests():
     assert r.status_code == 200
 
     # Also deactivate Question 1
-    r = requests.delete(f"{BASE_URL}/admin/questions/1", headers=headers)
+    r = requests.patch(f"{BASE_URL}/admin/questions/1/status", headers=headers, json={"is_active": False})
     assert r.status_code == 200
+
+    # Verify Question 1 CANNOT be permanently deleted because of historical records
+    r_del = requests.delete(f"{BASE_URL}/admin/questions/1", headers=headers)
+    assert r_del.status_code == 400
+    assert "This question cannot be permanently deleted" in r_del.json().get("detail", "")
 
     # Change settings to question count 35
     r = requests.put(f"{BASE_URL}/admin/assessment-settings", headers=headers, json={"question_count": 35, "time_limit_minutes": 40})
