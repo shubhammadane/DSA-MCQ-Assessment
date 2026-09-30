@@ -27,6 +27,8 @@ A full-stack, college-grade **Data Structures & Algorithms MCQ Assessment Web Ap
      - **Green (`✓ CORRECT`)** badge for correct answers.
      - **Red (`✗ WRONG`)** badge for incorrect answers.
      - Highlights student's selected answer vs. authoritative correct answer.
+     <img width="1891" height="943" alt="Screenshot 2026-09-30 051804" src="https://github.com/user-attachments/assets/b027e717-4649-43e5-ace1-0bd2b53ef961" />
+     <img width="1894" height="929" alt="image" src="https://github.com/user-attachments/assets/8c555422-7d79-4011-9b27-59b17326f955" />
 
 ---
 
