@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ChevronLeft, User, CreditCard, Building, Check, X } from 'lucide-react';
+import { ChevronLeft, User, CreditCard, Building, Check, X, ShieldAlert } from 'lucide-react';
 import api from '../services/api';
 import type { TestResult } from '../types';
 
@@ -49,13 +49,16 @@ export const AdminStudentDetails: React.FC = () => {
 
   if (!result) {
     return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center text-white">
-        <p>Student details not found.</p>
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-white space-y-4">
+        <p>Student assessment record not found.</p>
+        <button onClick={() => navigate('/admin/dashboard')} className="px-4 py-2 bg-slate-800 text-slate-300 rounded-xl">
+          Return to Dashboard
+        </button>
       </div>
     );
   }
 
-  const { student, attempt, answers } = result;
+  const { student, attempt, answers, security_logs } = result;
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 py-8 px-4 md:px-8">
@@ -71,15 +74,18 @@ export const AdminStudentDetails: React.FC = () => {
         <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 md:p-8 space-y-6 shadow-2xl">
           <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800 pb-6">
             <div>
-              <span className="text-xs font-bold uppercase tracking-wider text-indigo-400 bg-indigo-500/10 px-3 py-1 rounded-full">
-                Student Examination Audit
+              <span className="text-xs font-bold uppercase tracking-wider text-indigo-400 bg-indigo-500/10 px-3 py-1 rounded-full border border-indigo-500/20">
+                Examination Assessment Audit
               </span>
               <h1 className="text-2xl md:text-3xl font-extrabold text-white mt-2">{student.name}</h1>
+              <p className="text-xs text-slate-400 mt-1">
+                Exam: <span className="text-white font-semibold">{attempt.exam_title_snapshot || 'General Assessment'}</span> • Subject: <span className="text-sky-400 font-semibold">{attempt.subject_name_snapshot || 'DSA'}</span>
+              </p>
             </div>
             <div className="text-right">
               <span className="text-xs text-slate-400 block">Submitted At</span>
               <span className="text-sm font-semibold text-slate-200">
-                {attempt.submitted_at ? new Date(attempt.submitted_at).toLocaleString() : 'N/A'}
+                {attempt.submitted_at ? new Date(attempt.submitted_at).toLocaleString() : (attempt.completed_at ? new Date(attempt.completed_at).toLocaleString() : 'N/A')}
               </span>
             </div>
           </div>
@@ -96,7 +102,7 @@ export const AdminStudentDetails: React.FC = () => {
               <CreditCard className="w-5 h-5 text-indigo-400" />
               <div>
                 <span className="text-xs text-slate-500 block">Enrollment Number</span>
-                <span className="font-semibold text-white">{student.enrollment_no}</span>
+                <span className="font-semibold text-white font-mono">{student.enrollment_no}</span>
               </div>
             </div>
             <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 flex items-center space-x-3">
@@ -131,12 +137,53 @@ export const AdminStudentDetails: React.FC = () => {
               <p className="text-2xl md:text-3xl font-black text-rose-500">{attempt.wrong_answers}</p>
             </div>
           </div>
+
+          {/* Anti-cheating monitoring summary */}
+          {(attempt.tab_switch_count > 0 || attempt.fullscreen_exit_count > 0 || attempt.copy_count > 0 || attempt.paste_count > 0 || (security_logs && security_logs.length > 0)) && (
+            <div className="bg-rose-500/10 border border-rose-500/20 rounded-2xl p-5 space-y-3">
+              <div className="flex items-center space-x-2 text-rose-400 font-bold text-sm">
+                <ShieldAlert className="w-5 h-5" />
+                <span>Anti-Cheating Audit Alerts & Event Logs</span>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                <div className="bg-slate-950/80 p-2.5 rounded-xl border border-slate-800 text-center">
+                  <span className="text-slate-400 block text-[11px]">Tab Switches</span>
+                  <span className="font-bold text-rose-400 text-base">{attempt.tab_switch_count || 0}</span>
+                </div>
+                <div className="bg-slate-950/80 p-2.5 rounded-xl border border-slate-800 text-center">
+                  <span className="text-slate-400 block text-[11px]">Fullscreen Exits</span>
+                  <span className="font-bold text-rose-400 text-base">{attempt.fullscreen_exit_count || 0}</span>
+                </div>
+                <div className="bg-slate-950/80 p-2.5 rounded-xl border border-slate-800 text-center">
+                  <span className="text-slate-400 block text-[11px]">Copy Attempts</span>
+                  <span className="font-bold text-amber-400 text-base">{attempt.copy_count || 0}</span>
+                </div>
+                <div className="bg-slate-950/80 p-2.5 rounded-xl border border-slate-800 text-center">
+                  <span className="text-slate-400 block text-[11px]">Paste Attempts</span>
+                  <span className="font-bold text-amber-400 text-base">{attempt.paste_count || 0}</span>
+                </div>
+              </div>
+
+              {security_logs && security_logs.length > 0 && (
+                <div className="space-y-1.5 pt-2 max-h-40 overflow-y-auto">
+                  <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">Detailed Security Timeline</span>
+                  {security_logs.map((log) => (
+                    <div key={log.id} className="text-[11px] text-slate-300 flex justify-between bg-slate-950/60 p-2 rounded-lg border border-slate-800/80">
+                      <span>• [{log.event_type}] {log.details || 'Security event recorded'}</span>
+                      <span className="font-mono text-slate-500">{new Date(log.occurred_at).toLocaleTimeString()}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
+        {/* Answers List */}
         <div className="space-y-6">
           <div className="flex items-center justify-between">
-            <h2 className="text-xl font-bold text-white">Full 50-Question Answer Audit</h2>
-            <span className="text-xs text-slate-400">Read-only student submission</span>
+            <h2 className="text-xl font-bold text-white">Full Answer Audit ({answers.length} Questions)</h2>
+            <span className="text-xs text-slate-400">Read-only student attempt snapshot</span>
           </div>
 
           <div className="space-y-4">
@@ -199,3 +246,4 @@ export const AdminStudentDetails: React.FC = () => {
     </div>
   );
 };
+export default AdminStudentDetails;

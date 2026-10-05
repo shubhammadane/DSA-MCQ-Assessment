@@ -1,6 +1,15 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ChevronLeft, ChevronRight, Send, HelpCircle, CheckCircle2, Clock, AlertTriangle } from 'lucide-react';
+import {
+  ChevronLeft,
+  ChevronRight,
+  Send,
+  HelpCircle,
+  Clock,
+  Maximize2,
+  ShieldAlert,
+  ShieldCheck
+} from 'lucide-react';
 import api from '../services/api';
 import type { Question, AttemptStatus } from '../types';
 
@@ -16,11 +25,33 @@ export const StudentTest: React.FC = () => {
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [studentInfo, setStudentInfo] = useState<{ name: string; enrollment_no: string; department: string } | null>(null);
 
+  // Exam / Attempt details
+  const [examTitle, setExamTitle] = useState<string>('Online Assessment');
+  const [subjectName, setSubjectName] = useState<string>('General');
+
+  // Anti-cheating & security states
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const [tabSwitchWarnings, setTabSwitchWarnings] = useState<number>(0);
+  const [securityWarningMessage, setSecurityWarningMessage] = useState<string | null>(null);
+
   // Timer states
   const [remainingSeconds, setRemainingSeconds] = useState<number | null>(null);
   const [isTimedOut, setIsTimedOut] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isAutoSubmittingRef = useRef<boolean>(false);
+
+  // Record security event to backend
+  const logSecurityEvent = useCallback(async (eventType: string, details?: string) => {
+    if (!attemptId) return;
+    try {
+      await api.post(`/attempts/${attemptId}/security-log`, {
+        event_type: eventType,
+        details: details || null,
+      }).catch(() => {});
+    } catch {
+      // Non-blocking
+    }
+  }, [attemptId]);
 
   const handleAutoSubmit = useCallback(async () => {
     if (isAutoSubmittingRef.current || !attemptId) return;
@@ -29,10 +60,9 @@ export const StudentTest: React.FC = () => {
     setSubmitting(true);
 
     try {
-      // Attempt to save any uncommitted local answers first
       const payloadAnswers = Object.entries(answers).map(([qNum, sel]) => ({
         question_number: parseInt(qNum, 10),
-        selected_answer: sel
+        selected_answer: sel,
       }));
       if (payloadAnswers.length > 0) {
         await api.post(`/attempts/${attemptId}/answers`, { answers: payloadAnswers }).catch(() => {});
@@ -45,6 +75,91 @@ export const StudentTest: React.FC = () => {
     }
   }, [attemptId, answers, navigate]);
 
+  // Request fullscreen
+  const enterFullscreen = () => {
+    const elem = document.documentElement;
+    if (elem.requestFullscreen) {
+      elem.requestFullscreen().catch(() => {});
+    }
+  };
+
+  // Anti-Cheating Event Handlers
+  useEffect(() => {
+    // 1. Detect tab switch / window blur
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        setTabSwitchWarnings((prev) => prev + 1);
+        setSecurityWarningMessage('Tab switch detected! Your action has been recorded in the exam security audit log.');
+        logSecurityEvent('tab_switch', 'Student navigated away from exam tab/window.');
+      }
+    };
+
+    const handleWindowBlur = () => {
+      if (!isTimedOut) {
+        logSecurityEvent('tab_switch', 'Window lost focus.');
+      }
+    };
+
+    // 2. Fullscreen change detection
+    const handleFullscreenChange = () => {
+      const isFull = !!document.fullscreenElement;
+      setIsFullscreen(isFull);
+      if (!isFull && !isTimedOut) {
+        setSecurityWarningMessage('Fullscreen exited! Please return to fullscreen mode to continue examination.');
+        logSecurityEvent('fullscreen_exit', 'Student exited fullscreen mode.');
+      }
+    };
+
+    // 3. Prevent Copy & Paste
+    const handleCopy = (e: ClipboardEvent) => {
+      e.preventDefault();
+      setSecurityWarningMessage('Copying question content is disabled during examinations.');
+      logSecurityEvent('copy_attempt', 'Attempted to copy exam content.');
+    };
+
+    const handlePaste = (e: ClipboardEvent) => {
+      e.preventDefault();
+      setSecurityWarningMessage('Pasting content is disabled during examinations.');
+      logSecurityEvent('paste_attempt', 'Attempted to paste content.');
+    };
+
+    // 4. Prevent Context Menu (Right Click)
+    const handleContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+    };
+
+    // 5. Restrict common keyboard shortcuts
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (
+        (e.ctrlKey && ['c', 'v', 'u', 'p', 's', 'a'].includes(e.key.toLowerCase())) ||
+        e.key === 'F12' ||
+        (e.ctrlKey && e.shiftKey && ['i', 'j', 'c'].includes(e.key.toLowerCase()))
+      ) {
+        e.preventDefault();
+        setSecurityWarningMessage('Restricted shortcut blocked for exam security.');
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('blur', handleWindowBlur);
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    document.addEventListener('copy', handleCopy);
+    document.addEventListener('paste', handlePaste);
+    document.addEventListener('contextmenu', handleContextMenu);
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('blur', handleWindowBlur);
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      document.removeEventListener('copy', handleCopy);
+      document.removeEventListener('paste', handlePaste);
+      document.removeEventListener('contextmenu', handleContextMenu);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [logSecurityEvent, isTimedOut]);
+
+  // Initial Data Fetch
   useEffect(() => {
     const cachedStudent = sessionStorage.getItem('student');
     if (cachedStudent) {
@@ -58,7 +173,6 @@ export const StudentTest: React.FC = () => {
 
     const initTest = async () => {
       try {
-        // 1. Fetch attempt status (authoritative server-side deadline & recorded answers)
         const statusRes = await api.get<AttemptStatus>(`/attempts/${attemptId}/status`);
         const statusData = statusRes.data;
 
@@ -67,10 +181,11 @@ export const StudentTest: React.FC = () => {
           return;
         }
 
-        // Set remaining seconds from server
+        if (statusData.exam_title) setExamTitle(statusData.exam_title);
+        if (statusData.subject_name) setSubjectName(statusData.subject_name);
+
         setRemainingSeconds(statusData.remaining_seconds);
 
-        // Preload existing answers if any
         if (statusData.answers) {
           const preloaded: { [qNum: number]: string } = {};
           Object.entries(statusData.answers).forEach(([k, v]) => {
@@ -79,7 +194,6 @@ export const StudentTest: React.FC = () => {
           setAnswers(preloaded);
         }
 
-        // 2. Fetch questions assigned to this specific attempt
         const qRes = await api.get<Question[]>(`/questions?attempt_id=${attemptId}`);
         setQuestions(qRes.data);
       } catch (err: any) {
@@ -95,7 +209,7 @@ export const StudentTest: React.FC = () => {
     initTest();
   }, [attemptId, navigate]);
 
-  // Timer countdown countdown effect
+  // Timer Countdown Effect
   useEffect(() => {
     if (remainingSeconds === null || isTimedOut) return;
 
@@ -120,60 +234,53 @@ export const StudentTest: React.FC = () => {
     };
   }, [remainingSeconds, isTimedOut, handleAutoSubmit]);
 
-  const handleSelectOption = (optionKey: string) => {
-    if (isTimedOut || submitting) return;
+  const handleSelectAnswer = async (selectedKey: string) => {
+    if (!questions[currentIndex] || isTimedOut) return;
+    const currentQ = questions[currentIndex];
 
-    const qNum = currentIndex + 1;
-    const updated = { ...answers, [qNum]: optionKey };
-    setAnswers(updated);
+    const updatedAnswers = {
+      ...answers,
+      [currentQ.id]: selectedKey,
+    };
+    setAnswers(updatedAnswers);
 
-    if (attemptId) {
-      api.post(`/attempts/${attemptId}/answers`, {
-        answers: [{ question_number: qNum, selected_answer: optionKey }]
-      }).catch((err) => {
-        console.error('Auto-save error:', err);
-        if (err.response?.status === 400 && err.response.data?.detail?.includes('expired')) {
-          handleAutoSubmit();
-        }
+    try {
+      await api.post(`/attempts/${attemptId}/answers`, {
+        question_number: currentQ.id,
+        selected_answer: selectedKey,
       });
+    } catch (err) {
+      console.error('Failed to save answer:', err);
     }
   };
 
-  const handleConfirmSubmit = async () => {
-    if (!attemptId || submitting) return;
+  const handleManualSubmit = async () => {
+    if (submitting || !attemptId) return;
     setSubmitting(true);
     setShowConfirmModal(false);
 
     try {
       const payloadAnswers = Object.entries(answers).map(([qNum, sel]) => ({
         question_number: parseInt(qNum, 10),
-        selected_answer: sel
+        selected_answer: sel,
       }));
-
-      await api.post(`/attempts/${attemptId}/answers`, { answers: payloadAnswers }).catch(() => {});
+      if (payloadAnswers.length > 0) {
+        await api.post(`/attempts/${attemptId}/answers`, { answers: payloadAnswers }).catch(() => {});
+      }
       await api.post(`/attempts/${attemptId}/submit`);
-
       navigate(`/result/${attemptId}`);
     } catch (err: any) {
-      console.error('Submit error:', err);
+      console.error('Failed to submit test:', err);
+      alert('Failed to submit test. Please try again.');
+    } finally {
       setSubmitting(false);
-      if (err.response?.status === 400 && err.response.data?.detail?.includes('expired')) {
-        handleAutoSubmit();
-      } else {
-        alert('Failed to submit test. Please check connection and try again.');
-      }
     }
   };
 
-  const formatTimer = (totalSecs: number | null): string => {
-    if (totalSecs === null || totalSecs < 0) return '--:--';
-    const hrs = Math.floor(totalSecs / 3600);
-    const mins = Math.floor((totalSecs % 3600) / 60);
-    const secs = totalSecs % 60;
-
-    if (hrs > 0) {
-      return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-    }
+  const formatTimer = (seconds: number | null): string => {
+    if (seconds === null) return '--:--';
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
@@ -181,231 +288,278 @@ export const StudentTest: React.FC = () => {
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col justify-center items-center text-white space-y-4">
         <div className="w-12 h-12 border-4 border-sky-500 border-t-transparent rounded-full animate-spin"></div>
-        <p className="text-slate-400 font-medium">Loading Assessment Questions & Syncing Timer...</p>
+        <p className="text-slate-400 font-medium">Securing Assessment Session & Loading Questions...</p>
       </div>
     );
   }
 
   if (questions.length === 0) {
     return (
-      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-white space-y-4 p-4">
-        <AlertTriangle className="w-12 h-12 text-rose-400" />
-        <p className="text-lg font-semibold">No questions available for this assessment.</p>
-        <button
-          onClick={() => navigate('/')}
-          className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-sm"
-        >
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-white space-y-4">
+        <p>No questions found for this exam attempt.</p>
+        <button onClick={() => navigate('/')} className="px-4 py-2 bg-slate-800 text-slate-300 rounded-xl">
           Return to Portal
         </button>
       </div>
     );
   }
 
-  const currentQuestion = questions[currentIndex];
-  const currentQNum = currentIndex + 1;
-  const totalQuestions = questions.length;
+  const currentQ = questions[currentIndex];
+  const isLastQuestion = currentIndex === questions.length - 1;
   const answeredCount = Object.keys(answers).length;
 
-  const isLowTime = remainingSeconds !== null && remainingSeconds <= 300; // <= 5 minutes
-  const isCriticalTime = remainingSeconds !== null && remainingSeconds <= 60; // <= 1 minute
-
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
-      <header className="bg-slate-900 border-b border-slate-800 sticky top-0 z-10 px-6 py-4 flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center space-x-4">
-          <div className="p-2 bg-sky-500/10 text-sky-400 rounded-lg">
-            <HelpCircle className="w-6 h-6" />
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col select-none">
+      {/* Security Warning Toast */}
+      {securityWarningMessage && (
+        <div className="bg-rose-950/90 border-b border-rose-500/40 text-rose-200 px-6 py-2.5 flex items-center justify-between text-xs sticky top-0 z-50 animate-pulse">
+          <div className="flex items-center space-x-2">
+            <ShieldAlert className="w-4 h-4 text-rose-400 flex-shrink-0" />
+            <span className="font-semibold">{securityWarningMessage} {tabSwitchWarnings > 0 && `(Audit Incident #${tabSwitchWarnings})`}</span>
           </div>
-          <div>
-            <h1 className="font-bold text-white text-lg leading-tight">Data Structures MCQ Assessment</h1>
-            <p className="text-xs text-slate-400">Total Questions: {totalQuestions} | Marks: {totalQuestions}</p>
-          </div>
-        </div>
-
-        {/* Real-time Countdown Timer Badge */}
-        <div className="flex items-center space-x-4">
-          <div
-            className={`flex items-center space-x-2 px-4 py-2 rounded-xl border font-mono font-bold text-sm transition-all ${
-              isCriticalTime
-                ? 'bg-rose-500/20 border-rose-500 text-rose-400 animate-pulse ring-2 ring-rose-500/40'
-                : isLowTime
-                ? 'bg-amber-500/10 border-amber-500/40 text-amber-400'
-                : 'bg-slate-950 border-slate-800 text-sky-400'
-            }`}
-          >
-            <Clock className={`w-4 h-4 ${isCriticalTime ? 'text-rose-400' : isLowTime ? 'text-amber-400' : 'text-sky-400'}`} />
-            <span>Time Left: {formatTimer(remainingSeconds)}</span>
-          </div>
-
-          {studentInfo && (
-            <div className="hidden lg:flex items-center space-x-6 text-sm bg-slate-950 px-4 py-2 rounded-xl border border-slate-800">
-              <div>
-                <span className="text-slate-500 block text-xs">Student</span>
-                <span className="font-semibold text-sky-400">{studentInfo.name}</span>
-              </div>
-              <div className="h-6 w-px bg-slate-800"></div>
-              <div>
-                <span className="text-slate-500 block text-xs">Enrollment</span>
-                <span className="font-semibold text-slate-300">{studentInfo.enrollment_no}</span>
-              </div>
-            </div>
-          )}
-
           <button
-            onClick={() => setShowConfirmModal(true)}
-            disabled={submitting}
-            className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-xl shadow-lg shadow-emerald-600/20 flex items-center space-x-2 transition-all ml-auto disabled:opacity-50"
+            onClick={() => setSecurityWarningMessage(null)}
+            className="text-rose-400 hover:text-white font-bold ml-4"
           >
-            <Send className="w-4 h-4" />
-            <span>Submit Test</span>
+            Dismiss
           </button>
+        </div>
+      )}
+
+      {/* Header */}
+      <header className="bg-slate-900 border-b border-slate-800 px-6 py-4 sticky top-0 z-40">
+        <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
+          <div className="space-y-1">
+            <div className="flex items-center space-x-2">
+              <span className="text-xs font-bold text-sky-400 bg-sky-500/10 px-2.5 py-0.5 rounded-full border border-sky-500/20">
+                {subjectName}
+              </span>
+              <span className="text-xs text-slate-500">•</span>
+              <span className="text-xs text-slate-400 flex items-center space-x-1">
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 inline" />
+                <span>Anti-Cheating Monitored</span>
+              </span>
+            </div>
+            <h1 className="text-lg font-bold text-white tracking-wide">
+              {examTitle}
+              {studentInfo && (
+                <span className="text-xs text-slate-400 font-normal ml-2 font-mono">
+                  • {studentInfo.name} ({studentInfo.enrollment_no})
+                </span>
+              )}
+            </h1>
+          </div>
+
+          <div className="flex items-center space-x-4">
+            {/* Fullscreen Button */}
+            {!isFullscreen && (
+              <button
+                onClick={enterFullscreen}
+                className="flex items-center space-x-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold transition-colors"
+                title="Enable Fullscreen"
+              >
+                <Maximize2 className="w-3.5 h-3.5" />
+                <span>Fullscreen</span>
+              </button>
+            )}
+
+            {/* Server-Side Timer Indicator */}
+            <div className={`px-4 py-2 rounded-xl border flex items-center space-x-2 font-mono font-bold text-sm ${
+              remainingSeconds !== null && remainingSeconds < 300
+                ? 'bg-rose-500/10 border-rose-500/30 text-rose-400 animate-pulse'
+                : 'bg-slate-950 border-slate-800 text-sky-400'
+            }`}>
+              <Clock className="w-4 h-4" />
+              <span>{formatTimer(remainingSeconds)}</span>
+            </div>
+
+            {/* Submit Button */}
+            <button
+              onClick={() => setShowConfirmModal(true)}
+              disabled={submitting}
+              className="px-5 py-2 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white font-bold rounded-xl shadow-lg shadow-emerald-500/20 flex items-center space-x-2 transition-all disabled:opacity-50 text-sm"
+            >
+              <Send className="w-4 h-4" />
+              <span>Submit Exam</span>
+            </button>
+          </div>
         </div>
       </header>
 
+      {/* Main Content Area */}
       <div className="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6 grid grid-cols-1 lg:grid-cols-4 gap-6">
-        <div className="lg:col-span-3 flex flex-col bg-slate-900 border border-slate-800 rounded-2xl p-6 md:p-8 space-y-6">
-          <div className="flex items-center justify-between border-b border-slate-800 pb-4">
-            <span className="text-xs font-bold uppercase tracking-wider text-sky-400 bg-sky-500/10 px-3 py-1 rounded-full">
-              Question {currentQNum} of {totalQuestions}
-            </span>
-            <span className="text-xs text-slate-400 flex items-center space-x-1">
-              <Clock className="w-4 h-4 text-slate-500" />
-              <span>Status: {answers[currentQNum] ? 'Answered' : 'Unanswered'}</span>
-            </span>
-          </div>
+        {/* Question Area (Left 3 columns) */}
+        <div className="lg:col-span-3 space-y-6 flex flex-col justify-between">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 md:p-8 space-y-6 shadow-xl">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-800/80">
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                Question {currentIndex + 1} of {questions.length}
+              </span>
+              <span className="text-xs text-slate-500">Single Choice MCQ</span>
+            </div>
 
-          <div className="space-y-4">
-            <h2 className="text-lg md:text-xl font-semibold text-white leading-relaxed">
-              {currentQuestion.question}
+            {/* Question Text */}
+            <h2 className="text-lg md:text-xl font-medium text-white leading-relaxed">
+              {currentQ.question}
             </h2>
 
-            <div className="space-y-3 pt-4">
-              {Object.entries(currentQuestion.options).map(([key, value]) => {
-                const isSelected = answers[currentQNum] === key;
+            {/* Options */}
+            <div className="space-y-3 pt-2">
+              {Object.entries(currentQ.options).map(([optKey, optText]) => {
+                const isSelected = answers[currentQ.id] === optKey;
                 return (
                   <button
-                    key={key}
-                    onClick={() => handleSelectOption(key)}
-                    disabled={isTimedOut || submitting}
-                    className={`w-full text-left p-4 rounded-xl border transition-all flex items-start space-x-4 ${
+                    key={optKey}
+                    type="button"
+                    onClick={() => handleSelectAnswer(optKey)}
+                    className={`w-full text-left p-4 rounded-2xl border transition-all flex items-start space-x-3.5 group ${
                       isSelected
-                        ? 'bg-sky-500/10 border-sky-500 text-white ring-1 ring-sky-500'
-                        : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700 hover:bg-slate-850'
+                        ? 'bg-sky-500/10 border-sky-500 text-white shadow-md shadow-sky-500/10'
+                        : 'bg-slate-950/60 border-slate-800 text-slate-300 hover:border-slate-700 hover:bg-slate-950'
                     }`}
                   >
-                    <span
-                      className={`w-7 h-7 flex items-center justify-center rounded-lg text-xs font-bold flex-shrink-0 mt-0.5 ${
-                        isSelected ? 'bg-sky-500 text-white' : 'bg-slate-800 text-slate-400'
-                      }`}
-                    >
-                      {key}
+                    <span className={`w-7 h-7 rounded-xl flex items-center justify-center font-bold text-xs flex-shrink-0 mt-0.5 border ${
+                      isSelected
+                        ? 'bg-sky-500 text-white border-sky-400'
+                        : 'bg-slate-800 text-slate-400 border-slate-700 group-hover:border-slate-600'
+                    }`}>
+                      {optKey}
                     </span>
-                    <span className="text-sm leading-relaxed">{value}</span>
+                    <span className="text-sm md:text-base leading-snug pt-0.5">{optText}</span>
                   </button>
                 );
               })}
             </div>
           </div>
 
-          <div className="mt-auto pt-6 border-t border-slate-800 flex items-center justify-between">
+          {/* Navigation Buttons */}
+          <div className="flex items-center justify-between bg-slate-900 border border-slate-800 rounded-2xl p-4">
             <button
               onClick={() => setCurrentIndex((prev) => Math.max(0, prev - 1))}
               disabled={currentIndex === 0}
-              className="px-4 py-2.5 rounded-xl border border-slate-800 bg-slate-950 hover:bg-slate-800 text-slate-300 text-sm font-medium flex items-center space-x-2 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold flex items-center space-x-1.5 transition-colors disabled:opacity-30 disabled:pointer-events-none"
             >
               <ChevronLeft className="w-4 h-4" />
               <span>Previous</span>
             </button>
 
             <span className="text-xs text-slate-500 font-medium">
-              {answeredCount} of {totalQuestions} answered
+              {answeredCount} of {questions.length} Answered
             </span>
 
-            <button
-              onClick={() => setCurrentIndex((prev) => Math.min(totalQuestions - 1, prev + 1))}
-              disabled={currentIndex === totalQuestions - 1}
-              className="px-4 py-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-sm font-medium flex items-center space-x-2 disabled:opacity-40 disabled:cursor-not-allowed transition-all shadow-md shadow-sky-600/20"
-            >
-              <span>Next</span>
-              <ChevronRight className="w-4 h-4" />
-            </button>
+            {isLastQuestion ? (
+              <button
+                onClick={() => setShowConfirmModal(true)}
+                className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 transition-colors"
+              >
+                <span>Review & Submit</span>
+                <Send className="w-3.5 h-3.5" />
+              </button>
+            ) : (
+              <button
+                onClick={() => setCurrentIndex((prev) => Math.min(questions.length - 1, prev + 1))}
+                className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-xl text-xs font-semibold flex items-center space-x-1.5 transition-colors"
+              >
+                <span>Next</span>
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            )}
           </div>
         </div>
 
-        <div className="lg:col-span-1 bg-slate-900 border border-slate-800 rounded-2xl p-6 flex flex-col space-y-6 h-fit">
-          <h3 className="text-sm font-bold text-slate-200 uppercase tracking-wider">Question Navigation</h3>
+        {/* Question Palette Sidebar (Right 1 column) */}
+        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-6 shadow-xl flex flex-col h-full">
+          <div>
+            <h3 className="text-sm font-bold text-white">Question Navigator</h3>
+            <p className="text-xs text-slate-400 mt-0.5">Click any number to jump directly</p>
+          </div>
 
-          <div className="grid grid-cols-5 gap-2 max-h-96 overflow-y-auto pr-1">
+          <div className="grid grid-cols-5 gap-2 max-h-[380px] overflow-y-auto pr-1">
             {questions.map((q, idx) => {
-              const qNum = idx + 1;
-              const isCurrent = currentIndex === idx;
-              const isAnswered = !!answers[qNum];
-
-              let stateClass = 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700';
-              if (isCurrent) {
-                stateClass = 'bg-sky-500 border-sky-400 text-white ring-2 ring-sky-400/50 font-bold';
-              } else if (isAnswered) {
-                stateClass = 'bg-emerald-500/20 border-emerald-500/50 text-emerald-400 font-medium';
-              }
+              const isAnswered = !!answers[q.id];
+              const isCurrent = idx === currentIndex;
 
               return (
                 <button
                   key={q.id}
                   onClick={() => setCurrentIndex(idx)}
-                  className={`h-10 rounded-lg border text-xs flex items-center justify-center transition-all ${stateClass}`}
+                  className={`h-9 rounded-xl font-bold text-xs flex items-center justify-center transition-all ${
+                    isCurrent
+                      ? 'ring-2 ring-sky-400 bg-sky-500 text-white'
+                      : isAnswered
+                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-500/30'
+                      : 'bg-slate-950 text-slate-400 border border-slate-800 hover:border-slate-700'
+                  }`}
                 >
-                  {qNum}
+                  {idx + 1}
                 </button>
               );
             })}
           </div>
 
-          <div className="pt-4 border-t border-slate-800 space-y-2 text-xs text-slate-400">
-            <div className="flex items-center space-x-2">
-              <span className="w-3 h-3 bg-sky-500 rounded-full inline-block"></span>
-              <span>Current Question</span>
+          <div className="pt-4 border-t border-slate-800 text-xs space-y-2 text-slate-400">
+            <div className="flex items-center justify-between">
+              <span className="flex items-center space-x-1.5">
+                <span className="w-3 h-3 rounded bg-emerald-500/40 border border-emerald-500/60 inline-block" />
+                <span>Answered</span>
+              </span>
+              <span className="font-bold text-emerald-400">{answeredCount}</span>
             </div>
-            <div className="flex items-center space-x-2">
-              <span className="w-3 h-3 bg-emerald-500/40 border border-emerald-500 rounded-full inline-block"></span>
-              <span>Answered Question</span>
-            </div>
-            <div className="flex items-center space-x-2">
-              <span className="w-3 h-3 bg-slate-950 border border-slate-800 rounded-full inline-block"></span>
-              <span>Unanswered Question</span>
+            <div className="flex items-center justify-between">
+              <span className="flex items-center space-x-1.5">
+                <span className="w-3 h-3 rounded bg-slate-950 border border-slate-800 inline-block" />
+                <span>Unanswered</span>
+              </span>
+              <span className="font-bold text-slate-400">{questions.length - answeredCount}</span>
             </div>
           </div>
         </div>
       </div>
 
+      {/* Confirmation Modal */}
       {showConfirmModal && (
-        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-md w-full space-y-6 shadow-2xl">
-            <div className="text-center space-y-2">
-              <div className="inline-flex p-3 bg-emerald-500/10 text-emerald-400 rounded-full mb-2">
-                <CheckCircle2 className="w-8 h-8" />
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-md w-full p-6 space-y-5 shadow-2xl">
+            <div className="flex items-center space-x-3 text-sky-400">
+              <div className="p-3 bg-sky-500/10 rounded-2xl border border-sky-500/20">
+                <HelpCircle className="w-6 h-6" />
               </div>
-              <h3 className="text-xl font-bold text-white">Submit Test Confirmation</h3>
-              <p className="text-sm text-slate-400">
-                Are you sure you want to submit the assessment?
-              </p>
-              <p className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2 mt-2">
-                You have answered <span className="font-bold">{answeredCount}</span> of <span className="font-bold">{totalQuestions}</span> questions.
-              </p>
+              <div>
+                <h4 className="text-lg font-bold text-white">Submit Examination?</h4>
+                <p className="text-xs text-slate-400">Are you sure you want to finish?</p>
+              </div>
             </div>
 
-            <div className="flex items-center space-x-3">
+            <div className="bg-slate-950/80 border border-slate-800 rounded-2xl p-4 text-xs space-y-2">
+              <div className="flex justify-between">
+                <span className="text-slate-400">Total Questions:</span>
+                <span className="font-bold text-white">{questions.length}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Questions Answered:</span>
+                <span className="font-bold text-emerald-400">{answeredCount}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Questions Left Blank:</span>
+                <span className="font-bold text-amber-400">{questions.length - answeredCount}</span>
+              </div>
+            </div>
+
+            <div className="flex items-center space-x-3 pt-2">
               <button
+                type="button"
                 onClick={() => setShowConfirmModal(false)}
-                className="flex-1 py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold rounded-xl text-sm transition-colors"
+                className="flex-1 py-3 px-4 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold transition-colors"
               >
-                Cancel
+                Return to Exam
               </button>
               <button
-                onClick={handleConfirmSubmit}
+                type="button"
+                onClick={handleManualSubmit}
                 disabled={submitting}
-                className="flex-1 py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-xl text-sm transition-colors disabled:opacity-50"
+                className="flex-1 py-3 px-4 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white rounded-xl text-xs font-bold shadow-lg shadow-emerald-500/20 transition-all"
               >
-                {submitting ? 'Submitting...' : 'Yes, Submit'}
+                {submitting ? 'Submitting...' : 'Yes, Submit Now'}
               </button>
             </div>
           </div>
@@ -414,3 +568,4 @@ export const StudentTest: React.FC = () => {
     </div>
   );
 };
+export default StudentTest;

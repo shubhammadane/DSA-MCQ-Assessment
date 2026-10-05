@@ -10,11 +10,11 @@ from datetime import datetime
 
 logger = logging.getLogger("uvicorn")
 
-# Create database tables automatically
+# Ensure database tables exist
 Base.metadata.create_all(bind=engine)
 
 def auto_seed_db():
-    """Ensure database has initial settings and the 50 DSA questions on first run."""
+    """Ensure database has initial settings, mandatory departments, and the 50 DSA questions on first run."""
     db = SessionLocal()
     try:
         # 1. Assessment Settings initialization
@@ -44,6 +44,8 @@ def auto_seed_db():
                     option_d=opts.get("D", ""),
                     correct_answer=q["correct_answer"],
                     topic="Data Structures & Algorithms",
+                    difficulty="Medium",
+                    marks=1,
                     is_active=True,
                     created_at=now,
                     updated_at=now
@@ -70,12 +72,12 @@ def auto_seed_db():
 auto_seed_db()
 
 app = FastAPI(
-    title="DSA MCQ Assessment Platform API",
-    description="Backend service for DSA MCQ 50-Question Online Examination System",
-    version="1.0.0"
+    title="College Examination & Assessment Management System API",
+    description="Backend service for College Examination & Assessment Management System with multi-department, subject-specific question banks, and student-specific exam access.",
+    version="2.0.0"
 )
 
-# Configure CORS for local dev, Render, and Vercel frontends
+# Configure CORS for local dev, Vercel, and Render frontends
 origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
@@ -101,5 +103,8 @@ app.include_router(router)
 
 @app.get("/")
 def read_root():
-    return {"status": "online", "message": "DSA MCQ Assessment System API is running"}
-
+    return {
+        "status": "online",
+        "system": "College Examination & Assessment Management System",
+        "message": "API is active and operational"
+    }
