@@ -127,10 +127,10 @@ def test_05_student_management_and_duplicate_prevention():
     st_data = res.json()
     assert st_data["enrollment_no"] == test_enrollment
 
-    # 2. Duplicate Prevention: Attempt to add same enrollment number
+    # 2. Duplicate Prevention: Attempt to add same enrollment number (Expects 409 Conflict per Section 8)
     dup_res = client.post("/api/admin/students", headers=admin_headers, json=s_payload)
-    assert dup_res.status_code == 400
-    assert "already exists" in dup_res.json()["detail"]
+    assert dup_res.status_code == 409
+    assert "Student with this Enrollment Number already exists" in dup_res.json()["detail"]
 
 
 def test_06_student_bulk_import():

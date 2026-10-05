@@ -102,13 +102,13 @@ def get_departments(all_status: bool = False, db: Session = Depends(get_db)):
 def create_department(dept_in: schemas.DepartmentCreate, admin: str = Depends(get_current_admin), db: Session = Depends(get_db)):
     name = dept_in.name.strip()
     if not name:
-        raise HTTPException(status_code=400, detail="Department name is required.")
+        raise HTTPException(status_code=400, detail="Department Full Name is required.")
     existing = db.query(models.Department).filter(models.Department.name.ilike(name)).first()
     if existing:
         raise HTTPException(status_code=400, detail=f"Department '{name}' already exists.")
     dept = models.Department(
         name=name,
-        code=dept_in.code.strip() if dept_in.code else name[:6].upper().replace(" ", ""),
+        code=dept_in.code.strip() if dept_in.code else None,
         is_active=True,
         created_at=datetime.utcnow()
     )
@@ -330,7 +330,13 @@ def admin_create_student(student_in: schemas.StudentCreate, admin: str = Depends
 
     existing = db.query(models.Student).filter(models.Student.enrollment_no == enrollment).first()
     if existing:
-        raise HTTPException(status_code=400, detail=f"Student with Enrollment No '{enrollment}' already exists.")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Student with this Enrollment Number already exists."
+        )
+
+    dept_obj = db.query(models.Department).filter(models.Department.name.ilike(dept)).first()
+    dept_id = dept_obj.id if dept_obj else None
 
     raw_password = student_in.password.strip() if student_in.password else enrollment
     hashed_pwd = hash_password(raw_password)
@@ -340,6 +346,7 @@ def admin_create_student(student_in: schemas.StudentCreate, admin: str = Depends
         name=name,
         gender=student_in.gender.strip() if student_in.gender else None,
         department=dept,
+        department_id=dept_id,
         program=student_in.program.strip() if student_in.program else "UG",
         year=student_in.year.strip() if student_in.year else "1st Year",
         semester=student_in.semester.strip() if student_in.semester else "Semester 1",
@@ -755,6 +762,22 @@ def create_exam(exam_in: schemas.ExamCreate, admin: str = Depends(get_current_ad
     if exam_in.subject_id:
         subj = db.query(models.Subject).filter(models.Subject.id == exam_in.subject_id).first()
         subj_name = subj.name if subj else None
+        if not dept_name and subj and subj.department_name:
+            dept_name = subj.department_name
+            if not exam_in.department_id:
+                exam_in.department_id = subj.department_id
+
+    # Validate active questions available in subject bank for random selection
+    if exam_in.selection_mode == "random" and exam_in.subject_id:
+        q_count = db.query(models.Question).filter(
+            models.Question.subject_id == exam_in.subject_id,
+            models.Question.is_active == True
+        ).count()
+        if q_count < exam_in.total_questions:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Only {q_count} active questions are available for this subject. Please add more questions."
+            )
 
     prog_name = None
     if exam_in.program_id:
@@ -997,6 +1020,8 @@ def delete_exam(exam_id: int, admin: str = Depends(get_current_admin), db: Sessi
             detail=f"Cannot delete exam '{exam.title}' because it has {attempt_cnt} recorded attempt(s). Please close or deactivate the exam instead."
         )
 
+    db.query(models.ExamStudent).filter(models.ExamStudent.exam_id == exam_id).delete(synchronize_session=False)
+    db.query(models.ExamQuestion).filter(models.ExamQuestion.exam_id == exam_id).delete(synchronize_session=False)
     db.delete(exam)
     db.commit()
     return {"message": f"Exam '{exam.title}' deleted successfully."}
@@ -1111,7 +1136,7 @@ def student_start_exam(
             if eq.question and eq.question.is_active:
                 chosen_questions.append(eq.question)
 
-    # 2. Random mode or fallback: pick from subject's question bank matching department/subject
+    # 2. Random mode: pick from subject's question bank matching subject
     if len(chosen_questions) < exam.total_questions:
         q_filter = db.query(models.Question).filter(models.Question.is_active == True)
         if exam.subject_id:
@@ -1120,17 +1145,25 @@ def student_start_exam(
             q_filter = q_filter.filter(models.Question.department_id == exam.department_id)
 
         available_qs = q_filter.all()
-        # If not enough subject-specific questions, fallback to any active questions so exam can proceed
         if len(available_qs) < exam.total_questions:
-            fallback_qs = db.query(models.Question).filter(models.Question.is_active == True).all()
-            for fq in fallback_qs:
-                if fq not in available_qs:
-                    available_qs.append(fq)
+            # Check if this is the legacy/unassigned assessment, else enforce subject questions
+            if exam.subject_id or exam.department_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Only {len(available_qs)} active question(s) are available for this subject. Please add more questions."
+                )
+            else:
+                available_qs = db.query(models.Question).filter(models.Question.is_active == True).all()
 
         needed = exam.total_questions - len(chosen_questions)
         already_ids = {q.id for q in chosen_questions}
         pool = [q for q in available_qs if q.id not in already_ids]
-        sampled = random.sample(pool, min(needed, len(pool)))
+        if len(pool) < needed:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Only {len(pool)} question(s) available in subject bank to select."
+            )
+        sampled = random.sample(pool, needed)
         chosen_questions.extend(sampled)
 
     # Create student answers snapshot
