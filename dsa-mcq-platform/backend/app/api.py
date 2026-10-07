@@ -105,7 +105,7 @@ def create_department(dept_in: schemas.DepartmentCreate, admin: str = Depends(ge
         raise HTTPException(status_code=400, detail="Department Full Name is required.")
     existing = db.query(models.Department).filter(models.Department.name.ilike(name)).first()
     if existing:
-        raise HTTPException(status_code=400, detail=f"Department '{name}' already exists.")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Department '{name}' already exists.")
     dept = models.Department(
         name=name,
         code=dept_in.code.strip() if dept_in.code else None,
@@ -773,10 +773,10 @@ def create_exam(exam_in: schemas.ExamCreate, admin: str = Depends(get_current_ad
             models.Question.subject_id == exam_in.subject_id,
             models.Question.is_active == True
         ).count()
-        if q_count < exam_in.total_questions:
+        if q_count > 0 and q_count < exam_in.total_questions:
             raise HTTPException(
                 status_code=400,
-                detail=f"Only {q_count} active questions are available for this subject. Please add more questions."
+                detail=f"Only {q_count} active question(s) available in this subject bank for {exam_in.total_questions} requested questions. Please add more questions or adjust question count."
             )
 
     prog_name = None
@@ -1666,7 +1666,7 @@ def get_attempt_result(attempt_id: int, db: Session = Depends(get_db)):
 
 @router.get("/admin/dashboard", response_model=schemas.AdminDashboardStats)
 def get_admin_dashboard(admin: str = Depends(get_current_admin), db: Session = Depends(get_db)):
-    total_students = db.query(models.Student).count()
+    total_students = db.query(models.Student).filter(models.Student.is_active == True).count()
     total_attempts = db.query(models.Attempt).count()
     completed_tests = db.query(models.Attempt).filter(models.Attempt.status.in_(["completed", "timed_out"])).count()
     
@@ -1675,7 +1675,9 @@ def get_admin_dashboard(admin: str = Depends(get_current_admin), db: Session = D
     
     total_departments = db.query(models.Department).count()
     total_subjects = db.query(models.Subject).count()
+    active_subjects = db.query(models.Subject).filter(models.Subject.is_active == True).count()
     total_exams = db.query(models.Exam).count()
+    active_exams = db.query(models.Exam).filter(models.Exam.status == "published", models.Exam.is_active == True).count()
     total_questions = db.query(models.Question).count()
 
     return {
@@ -1686,7 +1688,9 @@ def get_admin_dashboard(admin: str = Depends(get_current_admin), db: Session = D
         "average_percentage": round(float(avg_pct), 2),
         "total_departments": total_departments,
         "total_subjects": total_subjects,
+        "active_subjects": active_subjects,
         "total_exams": total_exams,
+        "active_exams": active_exams,
         "total_questions": total_questions
     }
 
@@ -2157,3 +2161,63 @@ def export_students_csv(admin: str = Depends(get_current_admin), db: Session = D
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
+
+
+# =========================================================================
+# 12. DANGER ZONE: ADMIN-ONLY COMPLETE DATA PURGE
+# =========================================================================
+
+@router.post("/admin/system/clear-all-data")
+def clear_all_application_data(
+    req: schemas.ClearAllDataRequest,
+    admin: str = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    DANGER ZONE: Controlled administrator-only purge of all application data.
+    Requires exact confirmation phrase: 'DELETE ALL DATA'.
+    Preserves database schema, alembic migrations, system settings, and admin auth.
+    """
+    if req.confirmation_phrase.strip() != "DELETE ALL DATA":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Confirmation phrase mismatch. You must type 'DELETE ALL DATA' exactly."
+        )
+
+    try:
+        deleted_records = {}
+        # Order respects all foreign key relationships:
+        deleted_records["exam_security_logs"] = db.query(models.ExamSecurityLog).delete()
+        deleted_records["student_answers"] = db.query(models.StudentAnswer).delete()
+        deleted_records["attempts"] = db.query(models.Attempt).delete()
+        deleted_records["exam_students"] = db.query(models.ExamStudent).delete()
+        deleted_records["exam_questions"] = db.query(models.ExamQuestion).delete()
+        deleted_records["exams"] = db.query(models.Exam).delete()
+        deleted_records["students"] = db.query(models.Student).delete()
+        deleted_records["questions"] = db.query(models.Question).delete()
+        deleted_records["subjects"] = db.query(models.Subject).delete()
+        deleted_records["semesters"] = db.query(models.Semester).delete()
+        deleted_records["academic_years"] = db.query(models.AcademicYear).delete()
+        deleted_records["programs"] = db.query(models.Program).delete()
+        deleted_records["departments"] = db.query(models.Department).delete()
+
+        # Reset AssessmentSetting default parameters to baseline
+        setting = db.query(models.AssessmentSetting).first()
+        if setting:
+            setting.question_count = 50
+            setting.time_limit_minutes = 60
+            setting.updated_at = datetime.utcnow()
+
+        db.commit()
+
+        return {
+            "status": "success",
+            "message": "All application data cleared permanently.",
+            "cleared_records": deleted_records
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to clear application data: {str(e)}"
+        )

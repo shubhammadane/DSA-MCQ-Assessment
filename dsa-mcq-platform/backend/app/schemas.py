@@ -457,7 +457,9 @@ class AdminDashboardStats(BaseModel):
     average_percentage: float
     total_departments: int = 0
     total_subjects: int = 0
+    active_subjects: int = 0
     total_exams: int = 0
+    active_exams: int = 0
     total_questions: int = 0
 
 class StudentSummary(BaseModel):
@@ -489,3 +491,6 @@ class AssessmentSettingsOut(BaseModel):
 class AssessmentSettingsUpdate(BaseModel):
     question_count: int = Field(..., gt=0)
     time_limit_minutes: int = Field(..., gt=0)
+
+class ClearAllDataRequest(BaseModel):
+    confirmation_phrase: str

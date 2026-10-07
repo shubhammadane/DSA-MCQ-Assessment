@@ -133,7 +133,9 @@ export interface AdminStats {
   average_percentage: number;
   total_departments?: number;
   total_subjects?: number;
+  active_subjects?: number;
   total_exams?: number;
+  active_exams?: number;
   total_questions?: number;
 }
 

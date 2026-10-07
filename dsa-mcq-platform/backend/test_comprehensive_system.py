@@ -50,7 +50,7 @@ def test_03_academic_structure_and_departments():
 
     # Test Add Department
     dept_res = client.post("/api/departments", headers=admin_headers, json={"name": "Aerospace Engineering", "code": "AERO"})
-    assert dept_res.status_code in [201, 400]  # 201 or already exists
+    assert dept_res.status_code in [201, 400, 409]  # 201 or already exists (409 Conflict)
 
 
 def test_04_manual_subject_management():

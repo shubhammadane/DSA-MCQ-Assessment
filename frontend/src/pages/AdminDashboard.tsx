@@ -59,6 +59,9 @@ export const AdminDashboard: React.FC = () => {
   const [subjectFormSemId, setSubjectFormSemId] = useState<number | ''>('');
 
   // Student Management State
+  const [subjectSaving, setSubjectSaving] = useState(false);
+  const [examSaving, setExamSaving] = useState(false);
+  const [studentSaving, setStudentSaving] = useState(false);
   const [studentsList, setStudentsList] = useState<Student[]>([]);
   const [studentSearch, setStudentSearch] = useState('');
   const [studentDeptFilter, setStudentDeptFilter] = useState('');
@@ -146,6 +149,11 @@ export const AdminDashboard: React.FC = () => {
   const [settingsTimeLimit, setSettingsTimeLimit] = useState<number>(60);
   const [settingsSaving, setSettingsSaving] = useState(false);
 
+  // Danger Zone / Clear All Data State
+  const [showClearDataModal, setShowClearDataModal] = useState(false);
+  const [clearDataPhrase, setClearDataPhrase] = useState('');
+  const [clearDataLoading, setClearDataLoading] = useState(false);
+
   // ==========================================
   // INITIALIZATION & DATA FETCHING
   // ==========================================
@@ -162,11 +170,13 @@ export const AdminDashboard: React.FC = () => {
   const loadOverview = async () => {
     setLoading(true);
     try {
-      const [statsRes, structureRes, deptsRes, subjectsRes] = await Promise.all([
+      const [statsRes, structureRes, deptsRes, subjectsRes, examsRes, studentsRes] = await Promise.all([
         api.get('/admin/dashboard'),
         api.get('/academic-structure'),
         api.get('/departments'),
-        api.get('/subjects')
+        api.get('/subjects'),
+        api.get('/admin/exams'),
+        api.get('/admin/students/list')
       ]);
       setStats(statsRes.data);
       const loadedDepts = deptsRes.data.length > 0 ? deptsRes.data : (structureRes.data.departments || []);
@@ -175,6 +185,8 @@ export const AdminDashboard: React.FC = () => {
       setAcademicYears(structureRes.data.years || []);
       setSemesters(structureRes.data.semesters || []);
       setSubjects(subjectsRes.data || []);
+      setExams(examsRes.data || []);
+      setStudentsList(studentsRes.data || []);
 
       if (loadedDepts.length > 0) {
         setImportDept(loadedDepts[0].name);
@@ -355,8 +367,8 @@ export const AdminDashboard: React.FC = () => {
         return [...filtered, res.data].sort((a, b) => a.name.localeCompare(b.name));
       });
 
-      // Reload academic structure in background
-      await loadAcademicData();
+      // Reload overview & statistics in background
+      await loadOverview();
     } catch (err: any) {
       showNotice('error', err.response?.data?.detail || 'Failed to create department.');
     } finally {
@@ -369,7 +381,7 @@ export const AdminDashboard: React.FC = () => {
       const res = await api.patch(`/departments/${dept.id}/status`, { is_active: !dept.is_active });
       showNotice('success', `Department '${dept.name}' ${!dept.is_active ? 'activated' : 'deactivated'}.`);
       setDepartments(prev => prev.map(d => d.id === dept.id ? res.data : d));
-      loadAcademicData();
+      await loadOverview();
     } catch (err: any) {
       showNotice('error', err.response?.data?.detail || 'Failed to update department status.');
     }
@@ -401,6 +413,7 @@ export const AdminDashboard: React.FC = () => {
       return;
     }
 
+    setSubjectSaving(true);
     try {
       const payload = {
         name: subjectFormName.trim(),
@@ -426,9 +439,11 @@ export const AdminDashboard: React.FC = () => {
       setEditingSubject(null);
       setSubjectFormName('');
       setSubjectFormCode('');
-      loadSubjects();
+      await loadOverview();
     } catch (err: any) {
       showNotice('error', err.response?.data?.detail || 'Failed to save subject.');
+    } finally {
+      setSubjectSaving(false);
     }
   };
 
@@ -437,7 +452,7 @@ export const AdminDashboard: React.FC = () => {
       const res = await api.patch(`/subjects/${subj.id}/status`, { is_active: !subj.is_active });
       showNotice('success', `Subject '${subj.name}' ${!subj.is_active ? 'activated' : 'deactivated'}.`);
       setSubjects(prev => prev.map(s => s.id === subj.id ? res.data : s));
-      loadSubjects();
+      await loadOverview();
     } catch (err: any) {
       showNotice('error', err.response?.data?.detail || 'Failed to update subject status.');
     }
@@ -450,7 +465,7 @@ export const AdminDashboard: React.FC = () => {
       showNotice('success', `Subject '${deletingSubject.name}' deleted successfully.`);
       setSubjects(prev => prev.filter(s => s.id !== deletingSubject.id));
       setDeletingSubject(null);
-      loadSubjects();
+      await loadOverview();
     } catch (err: any) {
       showNotice('error', err.response?.data?.detail || 'Failed to delete subject.');
       setDeletingSubject(null);
@@ -481,6 +496,7 @@ export const AdminDashboard: React.FC = () => {
       return;
     }
 
+    setStudentSaving(true);
     try {
       const payload = {
         enrollment_no: stFormEnrollment.trim(),
@@ -507,13 +523,15 @@ export const AdminDashboard: React.FC = () => {
       setEditingStudent(null);
       setStFormEnrollment('');
       setStFormName('');
-      loadStudents();
+      await loadOverview();
     } catch (err: any) {
       if (err.response?.status === 409) {
         showNotice('error', 'Student with this Enrollment Number already exists.');
       } else {
         showNotice('error', err.response?.data?.detail || 'Failed to save student.');
       }
+    } finally {
+      setStudentSaving(false);
     }
   };
 
@@ -700,6 +718,7 @@ export const AdminDashboard: React.FC = () => {
       return;
     }
 
+    setExamSaving(true);
     try {
       const payload = {
         title: examFormTitle.trim(),
@@ -734,10 +753,12 @@ export const AdminDashboard: React.FC = () => {
       setEditingExam(null);
       setExamFormTitle('');
       setExamFormCode('');
-      loadExams();
+      await loadOverview();
     } catch (err: any) {
       // Show actual backend error (e.g. active question count validation)
       showNotice('error', err.response?.data?.detail || 'Failed to save exam.');
+    } finally {
+      setExamSaving(false);
     }
   };
 
@@ -746,7 +767,7 @@ export const AdminDashboard: React.FC = () => {
       const res = await api.patch(`/admin/exams/${exam.id}/status?status_name=${newStatus}`, { is_active: true });
       showNotice('success', `Exam '${exam.title}' status changed to ${newStatus}.`);
       setExams(prev => prev.map(e => e.id === exam.id ? res.data : e));
-      loadExams();
+      await loadOverview();
     } catch (err: any) {
       showNotice('error', err.response?.data?.detail || 'Failed to update exam status.');
     }
@@ -828,6 +849,28 @@ export const AdminDashboard: React.FC = () => {
       showNotice('error', err.response?.data?.detail || 'Failed to update settings.');
     } finally {
       setSettingsSaving(false);
+    }
+  };
+
+  const handleClearAllData = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (clearDataPhrase.trim() !== 'DELETE ALL DATA') {
+      showNotice('error', "You must type 'DELETE ALL DATA' exactly to confirm.");
+      return;
+    }
+    setClearDataLoading(true);
+    try {
+      const res = await api.post('/admin/system/clear-all-data', {
+        confirmation_phrase: clearDataPhrase.trim()
+      });
+      showNotice('success', res.data.message || 'All application data cleared permanently.');
+      setShowClearDataModal(false);
+      setClearDataPhrase('');
+      await loadOverview();
+    } catch (err: any) {
+      showNotice('error', err.response?.data?.detail || 'Failed to clear application data.');
+    } finally {
+      setClearDataLoading(false);
     }
   };
 
@@ -1027,7 +1070,7 @@ export const AdminDashboard: React.FC = () => {
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-xs font-semibold text-slate-400">Total Departments</p>
-                    <p className="text-2xl font-black text-white mt-1">{departments.length}</p>
+                    <p className="text-2xl font-black text-white mt-1">{stats?.total_departments ?? departments.length}</p>
                   </div>
                   <div className="p-3 bg-sky-500/10 text-sky-400 rounded-xl">
                     <Building className="w-6 h-6" />
@@ -1038,7 +1081,7 @@ export const AdminDashboard: React.FC = () => {
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-xs font-semibold text-slate-400">Active Subjects</p>
-                    <p className="text-2xl font-black text-white mt-1">{subjects.filter(s => s.is_active).length}</p>
+                    <p className="text-2xl font-black text-white mt-1">{stats?.active_subjects ?? subjects.filter(s => s.is_active).length}</p>
                   </div>
                   <div className="p-3 bg-indigo-500/10 text-indigo-400 rounded-xl">
                     <BookOpen className="w-6 h-6" />
@@ -1049,7 +1092,7 @@ export const AdminDashboard: React.FC = () => {
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-xs font-semibold text-slate-400">Enrolled Students</p>
-                    <p className="text-2xl font-black text-white mt-1">{studentsList.length || stats?.total_students || 0}</p>
+                    <p className="text-2xl font-black text-white mt-1">{stats?.total_students ?? studentsList.filter(s => s.is_active).length}</p>
                   </div>
                   <div className="p-3 bg-emerald-500/10 text-emerald-400 rounded-xl">
                     <Users className="w-6 h-6" />
@@ -1060,7 +1103,7 @@ export const AdminDashboard: React.FC = () => {
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-xs font-semibold text-slate-400">Active Exams</p>
-                    <p className="text-2xl font-black text-white mt-1">{exams.filter(e => e.status === 'published').length}</p>
+                    <p className="text-2xl font-black text-white mt-1">{stats?.active_exams ?? exams.filter(e => e.status === 'published' && e.is_active !== false).length}</p>
                   </div>
                   <div className="p-3 bg-purple-500/10 text-purple-400 rounded-xl">
                     <Calendar className="w-6 h-6" />
@@ -1989,6 +2032,34 @@ export const AdminDashboard: React.FC = () => {
                 </button>
               </div>
             </form>
+
+            {/* Danger Zone / Data Management Card */}
+            <div className="bg-rose-950/20 border border-rose-900/50 rounded-2xl p-6 space-y-4 shadow-xl">
+              <div className="flex items-center space-x-2 text-rose-400">
+                <AlertTriangle className="w-5 h-5 flex-shrink-0" />
+                <h4 className="text-sm font-bold uppercase tracking-wider">Danger Zone • System Data Management</h4>
+              </div>
+              <p className="text-xs text-rose-300/80 leading-relaxed">
+                Permanently purge all institutional application records from the database, including departments, subjects, students, questions, examinations, student attempts, and results.
+              </p>
+              <div className="p-3 bg-rose-950/40 border border-rose-900/40 rounded-xl text-[11px] text-rose-300 space-y-1">
+                <p>• <strong>Will be removed:</strong> Departments, Academic Structure, Subjects, Questions, Students, Exams, Attempts, Answers.</p>
+                <p>• <strong>Preserved:</strong> Admin credentials, database schema, and server configuration.</p>
+              </div>
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setClearDataPhrase('');
+                    setShowClearDataModal(true);
+                  }}
+                  className="px-4 py-2.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold transition-colors flex items-center space-x-2"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  <span>Clear All Application Data</span>
+                </button>
+              </div>
+            </div>
           </div>
         )}
 
@@ -2221,9 +2292,10 @@ export const AdminDashboard: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 py-2.5 bg-sky-600 hover:bg-sky-500 text-white rounded-xl font-bold"
+                  disabled={subjectSaving}
+                  className="flex-1 py-2.5 bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white rounded-xl font-bold transition-colors"
                 >
-                  {editingSubject ? 'Update Subject' : 'Add Subject'}
+                  {subjectSaving ? 'Saving...' : (editingSubject ? 'Update Subject' : 'Add Subject')}
                 </button>
               </div>
             </form>
@@ -2382,9 +2454,10 @@ export const AdminDashboard: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 py-2.5 bg-sky-600 hover:bg-sky-500 text-white rounded-xl font-bold"
+                  disabled={studentSaving}
+                  className="flex-1 py-2.5 bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white rounded-xl font-bold transition-colors"
                 >
-                  {editingStudent ? 'Save Changes' : 'Register Student'}
+                  {studentSaving ? 'Saving...' : (editingStudent ? 'Save Changes' : 'Register Student')}
                 </button>
               </div>
             </form>
@@ -2749,9 +2822,10 @@ export const AdminDashboard: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 py-2.5 bg-purple-600 hover:bg-purple-500 text-white rounded-xl font-bold"
+                  disabled={examSaving}
+                  className="flex-1 py-2.5 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white rounded-xl font-bold transition-colors"
                 >
-                  {editingExam ? 'Save Changes' : 'Create Exam'}
+                  {examSaving ? 'Saving...' : (editingExam ? 'Save Changes' : 'Create Exam')}
                 </button>
               </div>
             </form>
@@ -3248,6 +3322,67 @@ export const AdminDashboard: React.FC = () => {
               >
                 Close Inspection
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 7: CLEAR ALL DATA (DANGER ZONE) */}
+      {showClearDataModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-rose-900/60 rounded-3xl max-w-lg w-full p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between pb-3 border-b border-rose-900/30">
+              <h4 className="text-base font-bold text-rose-400 flex items-center space-x-2">
+                <AlertTriangle className="w-5 h-5 text-rose-400" />
+                <span>Clear All Application Data</span>
+              </h4>
+              <button
+                disabled={clearDataLoading}
+                onClick={() => setShowClearDataModal(false)}
+                className="text-slate-400 hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div className="p-3.5 bg-rose-950/40 border border-rose-800/50 rounded-2xl text-rose-300 space-y-1.5">
+                <p className="font-bold text-rose-200">WARNING: THIS ACTION CANNOT BE UNDONE</p>
+                <p className="text-[11px] leading-relaxed">
+                  This will permanently delete all application data from the database. All departments, subjects, students, questions, examinations, and student test records will be erased.
+                </p>
+              </div>
+
+              <div className="space-y-1">
+                <p className="text-slate-400">To confirm, please type <strong className="text-white font-mono">DELETE ALL DATA</strong> below:</p>
+                <input
+                  type="text"
+                  autoFocus
+                  value={clearDataPhrase}
+                  onChange={(e) => setClearDataPhrase(e.target.value)}
+                  placeholder="DELETE ALL DATA"
+                  className="w-full p-2.5 bg-slate-950 border border-rose-900/60 rounded-xl text-white font-mono text-xs focus:outline-none focus:border-rose-500"
+                />
+              </div>
+
+              <div className="flex items-center space-x-3 pt-3">
+                <button
+                  type="button"
+                  disabled={clearDataLoading}
+                  onClick={() => setShowClearDataModal(false)}
+                  className="flex-1 py-2.5 bg-slate-800 text-slate-300 rounded-xl font-semibold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={clearDataPhrase.trim() !== 'DELETE ALL DATA' || clearDataLoading}
+                  onClick={handleClearAllData}
+                  className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl font-bold transition-colors"
+                >
+                  {clearDataLoading ? 'Purging all data...' : 'PERMANENTLY DELETE ALL DATA'}
+                </button>
+              </div>
             </div>
           </div>
         </div>
