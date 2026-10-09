@@ -5,12 +5,14 @@ import {
   UserCheck, Search, Eye, HelpCircle, Sliders, Plus, Edit3, Power,
   AlertTriangle, X, Shield, RefreshCw, Trash2, BookOpen,
   GraduationCap, Building, Layers, Calendar, UserPlus,
-  UploadCloud, FileSpreadsheet, ShieldAlert
+  UploadCloud, FileSpreadsheet, ShieldAlert, Lock, ArrowRight, ArrowLeft
 } from 'lucide-react';
 import api, { API_BASE_URL } from '../services/api';
+import { CollegeBranding } from '../components/CollegeBranding';
 import type {
   AdminStats, StudentSummary, AdminQuestion, AssessmentSettings,
-  Department, Program, AcademicYear, Semester, Subject, Exam, AssignedStudent, Student
+  Department, Program, AcademicYear, Semester, Subject, Exam, AssignedStudent, Student,
+  DepartmentStats, AdminUser
 } from '../types';
 
 type DashboardTab = 'overview' | 'academic' | 'students' | 'subjects' | 'questions' | 'exams' | 'records' | 'settings' | 'exports';
@@ -24,6 +26,16 @@ export const AdminDashboard: React.FC = () => {
   // Stats & Loading
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // User Profile & RBAC
+  const [currentUser, setCurrentUser] = useState<AdminUser | null>(() => {
+    const cached = localStorage.getItem('admin_user');
+    return cached ? JSON.parse(cached) : null;
+  });
+
+  // Department Stats State (GET /api/departments/stats)
+  const [deptStats, setDeptStats] = useState<DepartmentStats[]>([]);
+  const [selectedDeptWorkspace, setSelectedDeptWorkspace] = useState<DepartmentStats | null>(null);
 
   // Global Notification
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -59,9 +71,6 @@ export const AdminDashboard: React.FC = () => {
   const [subjectFormSemId, setSubjectFormSemId] = useState<number | ''>('');
 
   // Student Management State
-  const [subjectSaving, setSubjectSaving] = useState(false);
-  const [examSaving, setExamSaving] = useState(false);
-  const [studentSaving, setStudentSaving] = useState(false);
   const [studentsList, setStudentsList] = useState<Student[]>([]);
   const [studentSearch, setStudentSearch] = useState('');
   const [studentDeptFilter, setStudentDeptFilter] = useState('');
@@ -149,11 +158,6 @@ export const AdminDashboard: React.FC = () => {
   const [settingsTimeLimit, setSettingsTimeLimit] = useState<number>(60);
   const [settingsSaving, setSettingsSaving] = useState(false);
 
-  // Danger Zone / Clear All Data State
-  const [showClearDataModal, setShowClearDataModal] = useState(false);
-  const [clearDataPhrase, setClearDataPhrase] = useState('');
-  const [clearDataLoading, setClearDataLoading] = useState(false);
-
   // ==========================================
   // INITIALIZATION & DATA FETCHING
   // ==========================================
@@ -170,13 +174,13 @@ export const AdminDashboard: React.FC = () => {
   const loadOverview = async () => {
     setLoading(true);
     try {
-      const [statsRes, structureRes, deptsRes, subjectsRes, examsRes, studentsRes] = await Promise.all([
+      const [statsRes, structureRes, deptsRes, subjectsRes, deptStatsRes, meRes] = await Promise.all([
         api.get('/admin/dashboard'),
         api.get('/academic-structure'),
         api.get('/departments'),
         api.get('/subjects'),
-        api.get('/admin/exams'),
-        api.get('/admin/students/list')
+        api.get('/departments/stats'),
+        api.get('/auth/me')
       ]);
       setStats(statsRes.data);
       const loadedDepts = deptsRes.data.length > 0 ? deptsRes.data : (structureRes.data.departments || []);
@@ -185,16 +189,37 @@ export const AdminDashboard: React.FC = () => {
       setAcademicYears(structureRes.data.years || []);
       setSemesters(structureRes.data.semesters || []);
       setSubjects(subjectsRes.data || []);
-      setExams(examsRes.data || []);
-      setStudentsList(studentsRes.data || []);
+      
+      const statsList: DepartmentStats[] = deptStatsRes.data || [];
+      setDeptStats(statsList);
 
-      if (loadedDepts.length > 0) {
+      const user: AdminUser = meRes.data;
+      setCurrentUser(user);
+      localStorage.setItem('admin_user', JSON.stringify(user));
+
+      if (user.role === 'hod' && user.department_id) {
+        // HOD landing directly on their department dashboard workspace
+        const myDept = statsList.find((d: DepartmentStats) => d.id === user.department_id);
+        if (myDept) {
+          setSelectedDeptWorkspace(myDept);
+        }
+        setSubjectDeptFilter(String(user.department_id));
+        setQuestionDeptFilter(String(user.department_id));
+        if (user.department_name) {
+          setStudentDeptFilter(user.department_name);
+          setImportDept(user.department_name);
+          setStFormDept(user.department_name);
+          setRecordsDeptFilter(user.department_name);
+        }
+        setActiveTab('subjects');
+      } else if (loadedDepts.length > 0) {
         setImportDept(loadedDepts[0].name);
         setStFormDept(loadedDepts[0].name);
       }
     } catch (err: any) {
       if (err.response?.status === 401) {
         localStorage.removeItem('admin_token');
+        localStorage.removeItem('admin_user');
         navigate('/admin/login');
       } else {
         console.error('Error loading dashboard:', err);
@@ -299,8 +324,36 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
+  const handleManageDepartment = (dept: DepartmentStats) => {
+    if (currentUser?.role === 'hod' && currentUser.department_id !== dept.id) {
+      showNotice('error', 'Access restricted: HOD can only manage their assigned department.');
+      return;
+    }
+    setSelectedDeptWorkspace(dept);
+    setSubjectDeptFilter(String(dept.id));
+    setQuestionDeptFilter(String(dept.id));
+    setStudentDeptFilter(dept.name);
+    setRecordsDeptFilter(dept.name);
+    setActiveTab('subjects');
+    showNotice('success', `Opened workspace for ${dept.name}.`);
+  };
+
+  const handleClearDepartmentWorkspace = () => {
+    if (currentUser?.role === 'hod') {
+      return; // HOD cannot clear their department restriction
+    }
+    setSelectedDeptWorkspace(null);
+    setSubjectDeptFilter('');
+    setQuestionDeptFilter('');
+    setStudentDeptFilter('');
+    setRecordsDeptFilter('');
+    setActiveTab('overview');
+    showNotice('success', 'Returned to Department Selection Dashboard.');
+  };
+
   const handleLogout = () => {
     localStorage.removeItem('admin_token');
+    localStorage.removeItem('admin_user');
     navigate('/admin/login');
   };
 
@@ -367,8 +420,8 @@ export const AdminDashboard: React.FC = () => {
         return [...filtered, res.data].sort((a, b) => a.name.localeCompare(b.name));
       });
 
-      // Reload overview & statistics in background
-      await loadOverview();
+      // Reload academic structure in background
+      await loadAcademicData();
     } catch (err: any) {
       showNotice('error', err.response?.data?.detail || 'Failed to create department.');
     } finally {
@@ -381,7 +434,7 @@ export const AdminDashboard: React.FC = () => {
       const res = await api.patch(`/departments/${dept.id}/status`, { is_active: !dept.is_active });
       showNotice('success', `Department '${dept.name}' ${!dept.is_active ? 'activated' : 'deactivated'}.`);
       setDepartments(prev => prev.map(d => d.id === dept.id ? res.data : d));
-      await loadOverview();
+      loadAcademicData();
     } catch (err: any) {
       showNotice('error', err.response?.data?.detail || 'Failed to update department status.');
     }
@@ -395,8 +448,11 @@ export const AdminDashboard: React.FC = () => {
     setEditingSubject(null);
     setSubjectFormName('');
     setSubjectFormCode('');
-    // Default department to first available if exists
-    setSubjectFormDeptId(departments.length > 0 ? departments[0].id : '');
+    // Default department to HOD's department or selected workspace if active
+    const initialDeptId = (currentUser?.role === 'hod' && currentUser.department_id)
+      || (selectedDeptWorkspace?.id)
+      || (departments.length > 0 ? departments[0].id : '');
+    setSubjectFormDeptId(initialDeptId);
     setSubjectFormProgId(programs.length > 0 ? programs[0].id : 1);
     const validYears = getFilteredYears(programs.length > 0 ? programs[0].id : 1);
     const initialYear = validYears.length > 0 ? validYears[0].id : '';
@@ -413,7 +469,6 @@ export const AdminDashboard: React.FC = () => {
       return;
     }
 
-    setSubjectSaving(true);
     try {
       const payload = {
         name: subjectFormName.trim(),
@@ -439,11 +494,9 @@ export const AdminDashboard: React.FC = () => {
       setEditingSubject(null);
       setSubjectFormName('');
       setSubjectFormCode('');
-      await loadOverview();
+      loadSubjects();
     } catch (err: any) {
       showNotice('error', err.response?.data?.detail || 'Failed to save subject.');
-    } finally {
-      setSubjectSaving(false);
     }
   };
 
@@ -452,7 +505,7 @@ export const AdminDashboard: React.FC = () => {
       const res = await api.patch(`/subjects/${subj.id}/status`, { is_active: !subj.is_active });
       showNotice('success', `Subject '${subj.name}' ${!subj.is_active ? 'activated' : 'deactivated'}.`);
       setSubjects(prev => prev.map(s => s.id === subj.id ? res.data : s));
-      await loadOverview();
+      loadSubjects();
     } catch (err: any) {
       showNotice('error', err.response?.data?.detail || 'Failed to update subject status.');
     }
@@ -465,7 +518,7 @@ export const AdminDashboard: React.FC = () => {
       showNotice('success', `Subject '${deletingSubject.name}' deleted successfully.`);
       setSubjects(prev => prev.filter(s => s.id !== deletingSubject.id));
       setDeletingSubject(null);
-      await loadOverview();
+      loadSubjects();
     } catch (err: any) {
       showNotice('error', err.response?.data?.detail || 'Failed to delete subject.');
       setDeletingSubject(null);
@@ -481,12 +534,24 @@ export const AdminDashboard: React.FC = () => {
     setStFormEnrollment('');
     setStFormName('');
     setStFormGender('Male');
-    setStFormDept(departments.length > 0 ? departments[0].name : '');
+    const initialDeptName = (currentUser?.role === 'hod' && currentUser.department_name)
+      || (selectedDeptWorkspace?.name)
+      || (departments.length > 0 ? departments[0].name : '');
+    setStFormDept(initialDeptName);
     setStFormProg('UG');
     setStFormYear('1st Year');
     setStFormSem('Semester 1');
     setStFormPassword('student123');
     setShowAddStudentModal(true);
+  };
+
+  const openBulkImportModal = () => {
+    const initialDeptName = (currentUser?.role === 'hod' && currentUser.department_name)
+      || (selectedDeptWorkspace?.name)
+      || (departments.length > 0 ? departments[0].name : '');
+    setImportDept(initialDeptName);
+    setImportFile(null);
+    setShowBulkImportModal(true);
   };
 
   const handleSaveStudent = async (e: React.FormEvent) => {
@@ -496,7 +561,6 @@ export const AdminDashboard: React.FC = () => {
       return;
     }
 
-    setStudentSaving(true);
     try {
       const payload = {
         enrollment_no: stFormEnrollment.trim(),
@@ -523,15 +587,13 @@ export const AdminDashboard: React.FC = () => {
       setEditingStudent(null);
       setStFormEnrollment('');
       setStFormName('');
-      await loadOverview();
+      loadStudents();
     } catch (err: any) {
       if (err.response?.status === 409) {
         showNotice('error', 'Student with this Enrollment Number already exists.');
       } else {
         showNotice('error', err.response?.data?.detail || 'Failed to save student.');
       }
-    } finally {
-      setStudentSaving(false);
     }
   };
 
@@ -595,7 +657,10 @@ export const AdminDashboard: React.FC = () => {
     setQFormTopic('Data Structures');
     setQFormDifficulty('Medium');
     setQFormMarks(1);
-    setQFormDeptId(departments.length > 0 ? departments[0].id : '');
+    const initialDeptId = (currentUser?.role === 'hod' && currentUser.department_id)
+      || (selectedDeptWorkspace?.id)
+      || (departments.length > 0 ? departments[0].id : '');
+    setQFormDeptId(initialDeptId);
     setQFormSubjectId(subjects.length > 0 ? subjects[0].id : '');
     setShowAddQuestionModal(true);
   };
@@ -681,7 +746,9 @@ export const AdminDashboard: React.FC = () => {
     setExamFormCode('');
 
     // Pre-fill academic parameters
-    const initialDeptId = departments.length > 0 ? departments[0].id : '';
+    const initialDeptId = (currentUser?.role === 'hod' && currentUser.department_id)
+      || (selectedDeptWorkspace?.id)
+      || (departments.length > 0 ? departments[0].id : '');
     setExamFormDeptId(initialDeptId);
     const initialProgId = programs.length > 0 ? programs[0].id : 1;
     setExamFormProgId(initialProgId);
@@ -718,7 +785,6 @@ export const AdminDashboard: React.FC = () => {
       return;
     }
 
-    setExamSaving(true);
     try {
       const payload = {
         title: examFormTitle.trim(),
@@ -753,12 +819,10 @@ export const AdminDashboard: React.FC = () => {
       setEditingExam(null);
       setExamFormTitle('');
       setExamFormCode('');
-      await loadOverview();
+      loadExams();
     } catch (err: any) {
       // Show actual backend error (e.g. active question count validation)
       showNotice('error', err.response?.data?.detail || 'Failed to save exam.');
-    } finally {
-      setExamSaving(false);
     }
   };
 
@@ -767,7 +831,7 @@ export const AdminDashboard: React.FC = () => {
       const res = await api.patch(`/admin/exams/${exam.id}/status?status_name=${newStatus}`, { is_active: true });
       showNotice('success', `Exam '${exam.title}' status changed to ${newStatus}.`);
       setExams(prev => prev.map(e => e.id === exam.id ? res.data : e));
-      await loadOverview();
+      loadExams();
     } catch (err: any) {
       showNotice('error', err.response?.data?.detail || 'Failed to update exam status.');
     }
@@ -852,28 +916,6 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
-  const handleClearAllData = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (clearDataPhrase.trim() !== 'DELETE ALL DATA') {
-      showNotice('error', "You must type 'DELETE ALL DATA' exactly to confirm.");
-      return;
-    }
-    setClearDataLoading(true);
-    try {
-      const res = await api.post('/admin/system/clear-all-data', {
-        confirmation_phrase: clearDataPhrase.trim()
-      });
-      showNotice('success', res.data.message || 'All application data cleared permanently.');
-      setShowClearDataModal(false);
-      setClearDataPhrase('');
-      await loadOverview();
-    } catch (err: any) {
-      showNotice('error', err.response?.data?.detail || 'Failed to clear application data.');
-    } finally {
-      setClearDataLoading(false);
-    }
-  };
-
   const handleExportExcel = () => {
     const token = localStorage.getItem('admin_token') || '';
     window.open(`${API_BASE_URL}/admin/export/excel?token=${token}`, '_blank');
@@ -911,39 +953,63 @@ export const AdminDashboard: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
-      {/* Top Admin Header */}
-      <header className="bg-slate-900/90 backdrop-blur-md border-b border-slate-800 sticky top-0 z-50 px-6 py-4">
-        <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center space-x-3">
-            <div className="p-2.5 bg-gradient-to-tr from-sky-600 to-blue-500 rounded-xl shadow-lg shadow-sky-500/20">
-              <Shield className="w-5 h-5 text-white" />
-            </div>
-            <div>
-              <h1 className="text-lg font-bold text-white tracking-tight flex items-center space-x-2">
-                <span>College Examination & Assessment System</span>
-                <span className="text-[10px] px-2 py-0.5 bg-sky-500/10 text-sky-400 border border-sky-500/20 rounded font-semibold uppercase">
-                  Admin Panel
-                </span>
-              </h1>
-              <p className="text-xs text-slate-400">Institutional Examination & Assessment Management Desk</p>
+    <div className="min-h-screen bg-[#F5F8FC] text-slate-800 flex flex-col">
+      {/* Top Admin Header — Official College Branding */}
+      <header className="bg-white border-b border-slate-200 sticky top-0 z-50 px-4 py-3 shadow-xs">
+        <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
+
+          {/* Left: College Identity + App Name */}
+          <div className="flex items-center gap-3 min-w-0 flex-1">
+            <CollegeBranding size="sm" />
+            <div className="hidden md:block w-px h-10 bg-slate-200 flex-shrink-0" />
+            <div className="hidden md:flex items-center space-x-2 flex-shrink-0">
+              <div className="p-1.5 bg-blue-600 rounded-lg shadow-sm shadow-blue-500/20">
+                <Shield className="w-4 h-4 text-white" />
+              </div>
+              <div>
+                <h1 className="text-sm font-bold text-slate-900 tracking-tight flex items-center space-x-2">
+                  <span>College Examination &amp; Assessment System</span>
+                  <span className="text-[10px] px-2 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 rounded font-semibold uppercase tracking-wider">
+                    Admin Panel
+                  </span>
+                </h1>
+                <p className="text-[11px] text-slate-500">Institutional Examination &amp; Assessment Management Desk</p>
+              </div>
             </div>
           </div>
 
-          <div className="flex items-center space-x-3">
+          {/* Right: User Profile & Controls */}
+          <div className="flex items-center space-x-3 flex-shrink-0">
+            <div className="text-right hidden sm:block">
+              <p className="text-xs font-bold text-slate-900">{currentUser?.full_name || 'Administrator'}</p>
+              <p className="text-[10px] font-medium">
+                {currentUser?.role === 'hod' ? (
+                  <span className="text-amber-400 font-semibold flex items-center justify-end space-x-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
+                    <span>HOD • {currentUser.department_name || `Dept #${currentUser.department_id}`}</span>
+                  </span>
+                ) : (
+                  <span className="text-blue-700 font-semibold flex items-center justify-end space-x-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-blue-600"></span>
+                    <span>Super Administrator (All Access)</span>
+                  </span>
+                )}
+              </p>
+            </div>
+
             <button
               onClick={() => {
                 loadOverview();
                 showNotice('success', 'Dashboard synced with database.');
               }}
-              className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl transition-colors"
-              title="Refresh"
+              className="p-2 text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
+              title="Refresh Dashboard"
             >
               <RefreshCw className="w-4 h-4" />
             </button>
             <button
               onClick={handleLogout}
-              className="flex items-center space-x-1.5 px-3 py-1.5 bg-slate-800 hover:bg-rose-500/20 hover:text-rose-400 text-slate-300 rounded-xl text-xs font-semibold transition-colors"
+              className="flex items-center space-x-1.5 px-3 py-1.5 bg-slate-100 hover:bg-rose-50 hover:text-rose-600 text-slate-700 border border-slate-200 rounded-xl text-xs font-semibold transition-colors cursor-pointer"
             >
               <LogOut className="w-4 h-4" />
               <span>Logout</span>
@@ -955,11 +1021,10 @@ export const AdminDashboard: React.FC = () => {
       {/* Notification Toast */}
       {notification && (
         <div className="fixed top-20 right-6 z-50 max-w-md animate-in slide-in-from-top-4 duration-300">
-          <div className={`p-4 rounded-2xl shadow-2xl border flex items-start space-x-3 ${
-            notification.type === 'success'
+          <div className={`p-4 rounded-2xl shadow-2xl border flex items-start space-x-3 ${notification.type === 'success'
               ? 'bg-emerald-950/90 border-emerald-500/40 text-emerald-200'
               : 'bg-rose-950/90 border-rose-500/40 text-rose-200'
-          }`}>
+            }`}>
             {notification.type === 'success' ? (
               <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
             ) : (
@@ -973,137 +1038,292 @@ export const AdminDashboard: React.FC = () => {
         </div>
       )}
 
-      {/* Main Admin Navigation Tabs */}
-      <nav className="bg-slate-900 border-b border-slate-800 px-6 overflow-x-auto">
-        <div className="max-w-7xl mx-auto flex space-x-1 py-2 text-xs font-semibold whitespace-nowrap">
-          <button
-            onClick={() => setActiveTab('overview')}
-            className={`px-3.5 py-2 rounded-xl flex items-center space-x-2 transition-all ${
-              activeTab === 'overview' ? 'bg-sky-600 text-white shadow-md shadow-sky-600/20' : 'text-slate-400 hover:text-white hover:bg-slate-800'
-            }`}
-          >
-            <Layers className="w-4 h-4" />
-            <span>Overview</span>
-          </button>
-          <button
-            onClick={() => setActiveTab('academic')}
-            className={`px-3.5 py-2 rounded-xl flex items-center space-x-2 transition-all ${
-              activeTab === 'academic' ? 'bg-sky-600 text-white shadow-md shadow-sky-600/20' : 'text-slate-400 hover:text-white hover:bg-slate-800'
-            }`}
-          >
-            <Building className="w-4 h-4" />
-            <span>Academic Structure</span>
-          </button>
-          <button
-            onClick={() => setActiveTab('subjects')}
-            className={`px-3.5 py-2 rounded-xl flex items-center space-x-2 transition-all ${
-              activeTab === 'subjects' ? 'bg-sky-600 text-white shadow-md shadow-sky-600/20' : 'text-slate-400 hover:text-white hover:bg-slate-800'
-            }`}
-          >
-            <BookOpen className="w-4 h-4" />
-            <span>Subject Management</span>
-          </button>
-          <button
-            onClick={() => setActiveTab('students')}
-            className={`px-3.5 py-2 rounded-xl flex items-center space-x-2 transition-all ${
-              activeTab === 'students' ? 'bg-sky-600 text-white shadow-md shadow-sky-600/20' : 'text-slate-400 hover:text-white hover:bg-slate-800'
-            }`}
-          >
-            <Users className="w-4 h-4" />
-            <span>Student Management</span>
-          </button>
-          <button
-            onClick={() => setActiveTab('questions')}
-            className={`px-3.5 py-2 rounded-xl flex items-center space-x-2 transition-all ${
-              activeTab === 'questions' ? 'bg-sky-600 text-white shadow-md shadow-sky-600/20' : 'text-slate-400 hover:text-white hover:bg-slate-800'
-            }`}
-          >
-            <HelpCircle className="w-4 h-4" />
-            <span>Question Bank</span>
-          </button>
-          <button
-            onClick={() => setActiveTab('exams')}
-            className={`px-3.5 py-2 rounded-xl flex items-center space-x-2 transition-all ${
-              activeTab === 'exams' ? 'bg-sky-600 text-white shadow-md shadow-sky-600/20' : 'text-slate-400 hover:text-white hover:bg-slate-800'
-            }`}
-          >
-            <Calendar className="w-4 h-4" />
-            <span>Exam Management</span>
-          </button>
-          <button
-            onClick={() => setActiveTab('records')}
-            className={`px-3.5 py-2 rounded-xl flex items-center space-x-2 transition-all ${
-              activeTab === 'records' ? 'bg-sky-600 text-white shadow-md shadow-sky-600/20' : 'text-slate-400 hover:text-white hover:bg-slate-800'
-            }`}
-          >
-            <FileText className="w-4 h-4" />
-            <span>Assessment Records</span>
-          </button>
-          <button
-            onClick={() => setActiveTab('settings')}
-            className={`px-3.5 py-2 rounded-xl flex items-center space-x-2 transition-all ${
-              activeTab === 'settings' ? 'bg-sky-600 text-white shadow-md shadow-sky-600/20' : 'text-slate-400 hover:text-white hover:bg-slate-800'
-            }`}
-          >
-            <Sliders className="w-4 h-4" />
-            <span>Settings</span>
-          </button>
-          <button
-            onClick={() => setActiveTab('exports')}
-            className={`px-3.5 py-2 rounded-xl flex items-center space-x-2 transition-all ${
-              activeTab === 'exports' ? 'bg-sky-600 text-white shadow-md shadow-sky-600/20' : 'text-slate-400 hover:text-white hover:bg-slate-800'
-            }`}
-          >
-            <Download className="w-4 h-4" />
-            <span>Reports & Exports</span>
-          </button>
-        </div>
-      </nav>
+      {/* Main Navigation Tabs: Swapped between Institution Top Nav and Department Workspace Nav */}
+      {!selectedDeptWorkspace ? (
+        <nav className="bg-white border-b border-slate-200 px-6 overflow-x-auto shadow-xs">
+          <div className="max-w-7xl mx-auto flex space-x-1 py-2 text-xs font-semibold whitespace-nowrap">
+            <button
+              onClick={() => setActiveTab('overview')}
+              className={`px-3.5 py-2 rounded-xl flex items-center space-x-2 transition-all cursor-pointer ${
+                activeTab === 'overview'
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+              }`}
+            >
+              <Layers className="w-4 h-4" />
+              <span>Overview</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('academic')}
+              className={`px-3.5 py-2 rounded-xl flex items-center space-x-2 transition-all cursor-pointer ${
+                activeTab === 'academic'
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+              }`}
+            >
+              <Building className="w-4 h-4" />
+              <span>Academic Structure</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('subjects')}
+              className={`px-3.5 py-2 rounded-xl flex items-center space-x-2 transition-all cursor-pointer ${
+                activeTab === 'subjects'
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+              }`}
+            >
+              <BookOpen className="w-4 h-4" />
+              <span>Subject Management</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('students')}
+              className={`px-3.5 py-2 rounded-xl flex items-center space-x-2 transition-all cursor-pointer ${
+                activeTab === 'students'
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+              }`}
+            >
+              <Users className="w-4 h-4" />
+              <span>Student Management</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('questions')}
+              className={`px-3.5 py-2 rounded-xl flex items-center space-x-2 transition-all cursor-pointer ${
+                activeTab === 'questions'
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+              }`}
+            >
+              <HelpCircle className="w-4 h-4" />
+              <span>Question Bank</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('exams')}
+              className={`px-3.5 py-2 rounded-xl flex items-center space-x-2 transition-all cursor-pointer ${
+                activeTab === 'exams'
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+              }`}
+            >
+              <Calendar className="w-4 h-4" />
+              <span>Exam Management</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('records')}
+              className={`px-3.5 py-2 rounded-xl flex items-center space-x-2 transition-all cursor-pointer ${
+                activeTab === 'records'
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+              }`}
+            >
+              <FileText className="w-4 h-4" />
+              <span>Assessment Records</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('settings')}
+              className={`px-3.5 py-2 rounded-xl flex items-center space-x-2 transition-all cursor-pointer ${
+                activeTab === 'settings'
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+              }`}
+            >
+              <Sliders className="w-4 h-4" />
+              <span>Settings</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('exports')}
+              className={`px-3.5 py-2 rounded-xl flex items-center space-x-2 transition-all cursor-pointer ${
+                activeTab === 'exports'
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+              }`}
+            >
+              <Download className="w-4 h-4" />
+              <span>Reports &amp; Exports</span>
+            </button>
+          </div>
+        </nav>
+      ) : (
+        <nav className="bg-white border-b border-slate-200 px-6 py-2.5 shadow-xs">
+          <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center space-x-3">
+              {currentUser?.role !== 'hod' && (
+                <button
+                  onClick={handleClearDepartmentWorkspace}
+                  className="inline-flex items-center space-x-1.5 px-3 py-1.5 text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-xl transition-colors cursor-pointer"
+                  title="Return to department selection dashboard"
+                >
+                  <ArrowLeft className="w-3.5 h-3.5" />
+                  <span>Back to Departments</span>
+                </button>
+              )}
+              <div className="flex items-center space-x-2">
+                <span className="px-2 py-0.5 bg-blue-100 text-blue-800 border border-blue-200 rounded-lg font-mono text-xs font-bold">
+                  {selectedDeptWorkspace.code || 'DEPT'}
+                </span>
+                <span className="text-sm font-bold text-slate-900">
+                  {selectedDeptWorkspace.name}
+                </span>
+                {currentUser?.role === 'hod' ? (
+                  <span className="px-2.5 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-md text-[10px] font-bold">
+                    Assigned Department
+                  </span>
+                ) : (
+                  <span className="px-2.5 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 rounded-md text-[10px] font-bold">
+                    Department Workspace
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center space-x-1 overflow-x-auto text-xs font-semibold">
+              <button
+                onClick={() => setActiveTab('subjects')}
+                className={`px-3 py-1.5 rounded-lg flex items-center space-x-1.5 transition-all cursor-pointer ${
+                  activeTab === 'subjects'
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                <BookOpen className="w-3.5 h-3.5" />
+                <span>Subjects ({selectedDeptWorkspace.active_subjects_count})</span>
+              </button>
+              <button
+                onClick={() => setActiveTab('students')}
+                className={`px-3 py-1.5 rounded-lg flex items-center space-x-1.5 transition-all cursor-pointer ${
+                  activeTab === 'students'
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                <Users className="w-3.5 h-3.5" />
+                <span>Students ({selectedDeptWorkspace.students_count})</span>
+              </button>
+              <button
+                onClick={() => setActiveTab('questions')}
+                className={`px-3 py-1.5 rounded-lg flex items-center space-x-1.5 transition-all cursor-pointer ${
+                  activeTab === 'questions'
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                <HelpCircle className="w-3.5 h-3.5" />
+                <span>Questions</span>
+              </button>
+              <button
+                onClick={() => setActiveTab('exams')}
+                className={`px-3 py-1.5 rounded-lg flex items-center space-x-1.5 transition-all cursor-pointer ${
+                  activeTab === 'exams'
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                <Calendar className="w-3.5 h-3.5" />
+                <span>Exams ({selectedDeptWorkspace.exams_count})</span>
+              </button>
+              <button
+                onClick={() => setActiveTab('records')}
+                className={`px-3 py-1.5 rounded-lg flex items-center space-x-1.5 transition-all cursor-pointer ${
+                  activeTab === 'records'
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                <FileText className="w-3.5 h-3.5" />
+                <span>Assessment Records</span>
+              </button>
+              <button
+                onClick={() => setActiveTab('settings')}
+                className={`px-3 py-1.5 rounded-lg flex items-center space-x-1.5 transition-all cursor-pointer ${
+                  activeTab === 'settings'
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                <Sliders className="w-3.5 h-3.5" />
+                <span>Settings</span>
+              </button>
+              <button
+                onClick={() => setActiveTab('exports')}
+                className={`px-3 py-1.5 rounded-lg flex items-center space-x-1.5 transition-all cursor-pointer ${
+                  activeTab === 'exports'
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Reports &amp; Exports</span>
+              </button>
+            </div>
+          </div>
+        </nav>
+      )}
 
       {/* Main Workspace Body */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-6">
+        {selectedDeptWorkspace && (
+          <div className="mb-6 bg-white border border-slate-200 rounded-2xl p-4 shadow-xs flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center space-x-3">
+              <div className="p-2.5 bg-blue-50 text-blue-600 rounded-xl border border-blue-100">
+                <Building className="w-5 h-5" />
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-slate-900">
+                  {selectedDeptWorkspace.name} ({selectedDeptWorkspace.code || 'DEPT'})
+                </p>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {selectedDeptWorkspace.students_count} Enrolled Students • {selectedDeptWorkspace.active_subjects_count} Active Subjects • {selectedDeptWorkspace.exams_count} Exams ({selectedDeptWorkspace.active_exams_count} Active)
+                </p>
+              </div>
+            </div>
+            <div className="text-xs text-slate-500">
+              Department Workspace: <span className="font-semibold text-slate-700 capitalize">{activeTab}</span>
+            </div>
+          </div>
+        )}
+
         {/* 1. OVERVIEW TAB */}
         {activeTab === 'overview' && (
           <div className="space-y-6">
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-lg">
+              <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-lg">
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-xs font-semibold text-slate-400">Total Departments</p>
-                    <p className="text-2xl font-black text-white mt-1">{stats?.total_departments ?? departments.length}</p>
+                    <p className="text-2xl font-black text-slate-900 mt-1">{deptStats.length || departments.length}</p>
                   </div>
-                  <div className="p-3 bg-sky-500/10 text-sky-400 rounded-xl">
+                  <div className="p-3 bg-blue-50 text-blue-700 rounded-xl">
                     <Building className="w-6 h-6" />
                   </div>
                 </div>
               </div>
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-lg">
+              <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-lg">
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-xs font-semibold text-slate-400">Active Subjects</p>
-                    <p className="text-2xl font-black text-white mt-1">{stats?.active_subjects ?? subjects.filter(s => s.is_active).length}</p>
+                    <p className="text-2xl font-black text-slate-900 mt-1">{subjects.filter(s => s.is_active).length}</p>
                   </div>
                   <div className="p-3 bg-indigo-500/10 text-indigo-400 rounded-xl">
                     <BookOpen className="w-6 h-6" />
                   </div>
                 </div>
               </div>
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-lg">
+              <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-lg">
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-xs font-semibold text-slate-400">Enrolled Students</p>
-                    <p className="text-2xl font-black text-white mt-1">{stats?.total_students ?? studentsList.filter(s => s.is_active).length}</p>
+                    <p className="text-2xl font-black text-slate-900 mt-1">{studentsList.length || stats?.total_students || 0}</p>
                   </div>
                   <div className="p-3 bg-emerald-500/10 text-emerald-400 rounded-xl">
                     <Users className="w-6 h-6" />
                   </div>
                 </div>
               </div>
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-lg">
+              <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-lg">
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-xs font-semibold text-slate-400">Active Exams</p>
-                    <p className="text-2xl font-black text-white mt-1">{stats?.active_exams ?? exams.filter(e => e.status === 'published' && e.is_active !== false).length}</p>
+                    <p className="text-2xl font-black text-slate-900 mt-1">{exams.filter(e => e.status === 'published').length}</p>
                   </div>
                   <div className="p-3 bg-purple-500/10 text-purple-400 rounded-xl">
                     <Calendar className="w-6 h-6" />
@@ -1112,26 +1332,141 @@ export const AdminDashboard: React.FC = () => {
               </div>
             </div>
 
+            {/* Department Selection Dashboard — 10 Approved Institutional Departments */}
+            <div className="space-y-4 pt-2">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-lg font-bold text-slate-900 flex items-center space-x-2">
+                    <Building className="w-5 h-5 text-blue-600" />
+                    <span>Department Selection Dashboard</span>
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Live database-backed statistics for departments at Government College of Engineering, Chhatrapati Sambhajinagar
+                  </p>
+                </div>
+                {currentUser?.role !== 'hod' && (
+                  <button
+                    onClick={() => setShowAddDeptModal(true)}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 transition-colors"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>Add Department</span>
+                  </button>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {deptStats.map((d) => {
+                  const isAssigned = currentUser?.role === 'hod' && currentUser.department_id === d.id;
+                  const isForbidden = currentUser?.role === 'hod' && currentUser.department_id !== d.id;
+                  const isSelected = selectedDeptWorkspace?.id === d.id;
+
+                  return (
+                    <div
+                      key={d.id}
+                      className={`bg-slate-900 border rounded-2xl p-5 shadow-lg flex flex-col justify-between transition-all ${
+                        isAssigned
+                          ? 'border-amber-500/50 bg-slate-900/90 ring-1 ring-amber-500/30'
+                          : isSelected
+                          ? 'border-sky-500/60 ring-1 ring-sky-500/30'
+                          : 'border-slate-200 hover:border-slate-200'
+                      }`}
+                    >
+                      <div>
+                        <div className="flex items-center justify-between gap-2 mb-3">
+                          <span className="px-2.5 py-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-lg text-xs font-mono font-bold">
+                            {d.code || 'DEPT'}
+                          </span>
+                          <div className="flex items-center space-x-1.5">
+                            {isAssigned && (
+                              <span className="px-2 py-0.5 bg-amber-500/20 text-amber-300 border border-amber-500/30 rounded text-[10px] font-bold">
+                                Your Department
+                              </span>
+                            )}
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              d.is_active ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-slate-800 text-slate-400'
+                            }`}>
+                              {d.is_active ? 'Active' : 'Inactive'}
+                            </span>
+                          </div>
+                        </div>
+
+                        <h4 className="text-base font-bold text-slate-900 leading-snug mb-4">
+                          {d.name}
+                        </h4>
+
+                        {/* Live Metrics Grid from GET /api/departments/stats */}
+                        <div className="grid grid-cols-2 gap-2.5 mb-5">
+                          <div className="bg-slate-50 border border-slate-200 rounded-xl p-2.5">
+                            <span className="text-[10px] text-slate-400 block font-medium">Students</span>
+                            <span className="text-lg font-bold text-slate-900">{d.students_count}</span>
+                          </div>
+                          <div className="bg-slate-50 border border-slate-200 rounded-xl p-2.5">
+                            <span className="text-[10px] text-slate-400 block font-medium">Active Subjects</span>
+                            <span className="text-lg font-bold text-indigo-400">{d.active_subjects_count}</span>
+                          </div>
+                          <div className="bg-slate-50 border border-slate-200 rounded-xl p-2.5">
+                            <span className="text-[10px] text-slate-400 block font-medium">Total Exams</span>
+                            <span className="text-lg font-bold text-purple-400">{d.exams_count}</span>
+                          </div>
+                          <div className="bg-slate-50 border border-slate-200 rounded-xl p-2.5">
+                            <span className="text-[10px] text-slate-400 block font-medium">Active Exams</span>
+                            <span className="text-lg font-bold text-emerald-400">{d.active_exams_count}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={() => handleManageDepartment(d)}
+                        disabled={isForbidden}
+                        className={`w-full py-2.5 px-4 rounded-xl text-xs font-bold flex items-center justify-center space-x-2 transition-all ${
+                          isForbidden
+                            ? 'bg-slate-800/50 text-slate-600 cursor-not-allowed'
+                            : 'bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-sky-600/20'
+                        }`}
+                      >
+                        {isForbidden ? (
+                          <>
+                            <Lock className="w-3.5 h-3.5" />
+                            <span>Restricted (Other Dept)</span>
+                          </>
+                        ) : (
+                          <>
+                            <span>Manage Department</span>
+                            <ArrowRight className="w-3.5 h-3.5" />
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
             {/* Quick Action Tiles */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="bg-gradient-to-br from-slate-900 to-slate-900/60 border border-slate-800 rounded-2xl p-6 space-y-3">
-                <h3 className="text-base font-bold text-white flex items-center space-x-2">
-                  <Building className="w-5 h-5 text-sky-400" />
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-4 border-t border-slate-200">
+              <div className="bg-white border border-slate-200 shadow-xs rounded-2xl p-6 space-y-3">
+                <h3 className="text-base font-bold text-slate-900 flex items-center space-x-2">
+                  <Building className="w-5 h-5 text-blue-600" />
                   <span>Departments</span>
                 </h3>
                 <p className="text-xs text-slate-400 leading-relaxed">
                   Manage academic engineering departments. Create new departments with automatic availability across the entire system.
                 </p>
-                <button
-                  onClick={() => setShowAddDeptModal(true)}
-                  className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-xl text-xs font-bold transition-colors"
-                >
-                  + Add Department
-                </button>
+                {currentUser?.role !== 'hod' ? (
+                  <button
+                    onClick={() => setShowAddDeptModal(true)}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-colors"
+                  >
+                    + Add Department
+                  </button>
+                ) : (
+                  <span className="text-[11px] text-slate-500 italic block">Department management is Super Admin only.</span>
+                )}
               </div>
 
-              <div className="bg-gradient-to-br from-slate-900 to-slate-900/60 border border-slate-800 rounded-2xl p-6 space-y-3">
-                <h3 className="text-base font-bold text-white flex items-center space-x-2">
+              <div className="bg-white border border-slate-200 shadow-xs rounded-2xl p-6 space-y-3">
+                <h3 className="text-base font-bold text-slate-900 flex items-center space-x-2">
                   <BookOpen className="w-5 h-5 text-indigo-400" />
                   <span>Manual Subjects</span>
                 </h3>
@@ -1146,8 +1481,8 @@ export const AdminDashboard: React.FC = () => {
                 </button>
               </div>
 
-              <div className="bg-gradient-to-br from-slate-900 to-slate-900/60 border border-slate-800 rounded-2xl p-6 space-y-3">
-                <h3 className="text-base font-bold text-white flex items-center space-x-2">
+              <div className="bg-white border border-slate-200 shadow-xs rounded-2xl p-6 space-y-3">
+                <h3 className="text-base font-bold text-slate-900 flex items-center space-x-2">
                   <Calendar className="w-5 h-5 text-purple-400" />
                   <span>Examinations</span>
                 </h3>
@@ -1170,15 +1505,15 @@ export const AdminDashboard: React.FC = () => {
           <div className="space-y-6">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
-                <h3 className="text-lg font-bold text-white flex items-center space-x-2">
-                  <Building className="w-5 h-5 text-sky-400" />
+                <h3 className="text-lg font-bold text-slate-900 flex items-center space-x-2">
+                  <Building className="w-5 h-5 text-blue-600" />
                   <span>Department Management</span>
                 </h3>
                 <p className="text-xs text-slate-400">Institutional academic departments and branches</p>
               </div>
               <button
                 onClick={() => setShowAddDeptModal(true)}
-                className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 transition-colors"
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 transition-colors"
               >
                 <Plus className="w-4 h-4" />
                 <span>+ Add Department</span>
@@ -1187,23 +1522,22 @@ export const AdminDashboard: React.FC = () => {
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {departments.map((d) => (
-                <div key={d.id} className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex items-center justify-between shadow-lg">
+                <div key={d.id} className="bg-white border border-slate-200 rounded-2xl p-4 flex items-center justify-between shadow-lg">
                   <div className="flex items-center space-x-3">
-                    <div className="p-2.5 bg-slate-950 border border-slate-800 text-sky-400 rounded-xl">
+                    <div className="p-2.5 bg-slate-50 border border-slate-200 text-blue-600 rounded-xl">
                       <Building className="w-5 h-5" />
                     </div>
                     <div>
-                      <h4 className="text-sm font-bold text-white">{d.name}</h4>
+                      <h4 className="text-sm font-bold text-slate-900">{d.name}</h4>
                       <span className="text-[11px] text-slate-500 font-mono">ID: {d.id}</span>
                     </div>
                   </div>
                   <button
                     onClick={() => handleToggleDeptStatus(d)}
-                    className={`text-xs px-2.5 py-1 rounded-lg border font-semibold transition-colors ${
-                      d.is_active
+                    className={`text-xs px-2.5 py-1 rounded-lg border font-semibold transition-colors ${d.is_active
                         ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20'
-                        : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700'
-                    }`}
+                        : 'bg-slate-800 text-slate-400 border-slate-200 hover:bg-slate-700'
+                      }`}
                   >
                     {d.is_active ? 'Active' : 'Inactive'}
                   </button>
@@ -1212,22 +1546,22 @@ export const AdminDashboard: React.FC = () => {
             </div>
 
             {/* Academic Program Hierarchy */}
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
-              <h3 className="text-base font-bold text-white">Academic Program Hierarchy</h3>
+            <div className="bg-white border border-slate-200 rounded-2xl p-6 space-y-4">
+              <h3 className="text-base font-bold text-slate-900">Academic Program Hierarchy</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 {/* UG Programs */}
-                <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-5 space-y-3">
-                  <div className="flex items-center space-x-2 text-sky-400 font-bold text-sm">
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-5 space-y-3">
+                  <div className="flex items-center space-x-2 text-blue-600 font-bold text-sm">
                     <GraduationCap className="w-4 h-4" />
                     <span>Undergraduate (UG / B.Tech)</span>
                   </div>
                   <div className="space-y-2 text-xs">
                     {academicYears.filter(y => y.program_id === 1 || (y.name.includes('Year') && !y.name.includes('M.Tech'))).map(yr => (
-                      <div key={yr.id} className="pl-3 border-l-2 border-slate-800 py-1 space-y-1">
+                      <div key={yr.id} className="pl-3 border-l-2 border-slate-200 py-1 space-y-1">
                         <span className="text-slate-200 font-bold block">{yr.name}</span>
                         <div className="flex flex-wrap gap-2 text-[11px] text-slate-400">
                           {semesters.filter(s => s.academic_year_id === yr.id).map(sem => (
-                            <span key={sem.id} className="px-2 py-0.5 bg-slate-900 border border-slate-800 rounded">
+                            <span key={sem.id} className="px-2 py-0.5 bg-white border border-slate-200 rounded">
                               {sem.name}
                             </span>
                           ))}
@@ -1238,18 +1572,18 @@ export const AdminDashboard: React.FC = () => {
                 </div>
 
                 {/* M.Tech Programs */}
-                <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-5 space-y-3">
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-5 space-y-3">
                   <div className="flex items-center space-x-2 text-purple-400 font-bold text-sm">
                     <GraduationCap className="w-4 h-4" />
                     <span>Postgraduate (M.Tech)</span>
                   </div>
                   <div className="space-y-2 text-xs">
                     {academicYears.filter(y => y.name.includes('M.Tech')).map(yr => (
-                      <div key={yr.id} className="pl-3 border-l-2 border-slate-800 py-1 space-y-1">
+                      <div key={yr.id} className="pl-3 border-l-2 border-slate-200 py-1 space-y-1">
                         <span className="text-slate-200 font-bold block">{yr.name}</span>
                         <div className="flex flex-wrap gap-2 text-[11px] text-slate-400">
                           {semesters.filter(s => s.academic_year_id === yr.id).map(sem => (
-                            <span key={sem.id} className="px-2 py-0.5 bg-slate-900 border border-slate-800 rounded">
+                            <span key={sem.id} className="px-2 py-0.5 bg-white border border-slate-200 rounded">
                               {sem.name}
                             </span>
                           ))}
@@ -1268,21 +1602,21 @@ export const AdminDashboard: React.FC = () => {
           <div className="space-y-6">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
-                <h3 className="text-lg font-bold text-white">Student Directory & Credentials</h3>
+                <h3 className="text-lg font-bold text-slate-900">Student Directory & Credentials</h3>
                 <p className="text-xs text-slate-400">Manage enrolled students, unique roll numbers, and login status</p>
               </div>
 
               <div className="flex items-center space-x-3">
                 <button
-                  onClick={() => setShowBulkImportModal(true)}
-                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold flex items-center space-x-1.5 transition-colors border border-slate-700"
+                  onClick={openBulkImportModal}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold flex items-center space-x-1.5 transition-colors border border-slate-200"
                 >
                   <UploadCloud className="w-4 h-4 text-emerald-400" />
                   <span>Bulk Import (CSV / XLSX / PDF)</span>
                 </button>
                 <button
                   onClick={openAddStudentModal}
-                  className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 transition-colors"
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 transition-colors"
                 >
                   <UserPlus className="w-4 h-4" />
                   <span>+ Add Student</span>
@@ -1291,7 +1625,7 @@ export const AdminDashboard: React.FC = () => {
             </div>
 
             {/* Filter Bar */}
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-wrap items-center gap-4">
+            <div className="bg-white border border-slate-200 rounded-2xl p-4 flex flex-wrap items-center gap-4">
               <div className="relative flex-1 min-w-[220px]">
                 <Search className="w-4 h-4 text-slate-500 absolute left-3 top-3" />
                 <input
@@ -1299,14 +1633,14 @@ export const AdminDashboard: React.FC = () => {
                   placeholder="Search by Roll No or Name..."
                   value={studentSearch}
                   onChange={(e) => setStudentSearch(e.target.value)}
-                  className="w-full pl-9 pr-4 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-500"
+                  className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-500"
                 />
               </div>
 
               <select
                 value={studentDeptFilter}
                 onChange={(e) => setStudentDeptFilter(e.target.value)}
-                className="py-2 px-3 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-300 focus:outline-none"
+                className="py-2 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-300 focus:outline-none"
               >
                 <option value="">All Departments</option>
                 {departments.map((d) => (
@@ -1316,10 +1650,10 @@ export const AdminDashboard: React.FC = () => {
             </div>
 
             {/* Students Table */}
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
+            <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xl">
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs">
-                  <thead className="bg-slate-950 border-b border-slate-800 text-slate-400 font-semibold uppercase tracking-wider">
+                  <thead className="bg-slate-950 border-b border-slate-200 text-slate-400 font-semibold uppercase tracking-wider">
                     <tr>
                       <th className="py-3.5 px-4">Roll / Enrollment No</th>
                       <th className="py-3.5 px-4">Student Name</th>
@@ -1339,7 +1673,7 @@ export const AdminDashboard: React.FC = () => {
                       })
                       .map((st) => (
                         <tr key={st.id} className="hover:bg-slate-800/30 transition-colors">
-                          <td className="py-3.5 px-4 font-mono font-bold text-sky-400">{st.enrollment_no}</td>
+                          <td className="py-3.5 px-4 font-mono font-bold text-blue-600">{st.enrollment_no}</td>
                           <td className="py-3.5 px-4 font-medium text-white">{st.name}</td>
                           <td className="py-3.5 px-4 text-slate-400">{st.gender || '-'}</td>
                           <td className="py-3.5 px-4 text-slate-300">{st.department}</td>
@@ -1347,11 +1681,10 @@ export const AdminDashboard: React.FC = () => {
                             {st.program || 'UG'} • {st.year || '1st Year'} • {st.semester || 'Sem 1'}
                           </td>
                           <td className="py-3.5 px-4">
-                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
-                              st.is_active
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${st.is_active
                                 ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
                                 : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
-                            }`}>
+                              }`}>
                               {st.is_active ? 'Active' : 'Inactive'}
                             </span>
                           </td>
@@ -1376,11 +1709,10 @@ export const AdminDashboard: React.FC = () => {
                             </button>
                             <button
                               onClick={() => handleToggleStudentStatus(st)}
-                              className={`p-1.5 rounded-lg transition-colors ${
-                                st.is_active
+                              className={`p-1.5 rounded-lg transition-colors ${st.is_active
                                   ? 'text-slate-400 hover:text-amber-400 hover:bg-amber-500/10'
                                   : 'text-emerald-400 hover:bg-emerald-500/10'
-                              }`}
+                                }`}
                               title={st.is_active ? 'Deactivate' : 'Activate'}
                             >
                               <Power className="w-4 h-4" />
@@ -1400,8 +1732,8 @@ export const AdminDashboard: React.FC = () => {
           <div className="space-y-6">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
-                <h3 className="text-lg font-bold text-white flex items-center space-x-2">
-                  <BookOpen className="w-5 h-5 text-sky-400" />
+                <h3 className="text-lg font-bold text-slate-900 flex items-center space-x-2">
+                  <BookOpen className="w-5 h-5 text-blue-600" />
                   <span>Subject Management</span>
                 </h3>
                 <p className="text-xs text-slate-400">
@@ -1419,7 +1751,7 @@ export const AdminDashboard: React.FC = () => {
             </div>
 
             {/* Filter Bar */}
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-wrap items-center gap-4">
+            <div className="bg-white border border-slate-200 rounded-2xl p-4 flex flex-wrap items-center gap-4">
               <div className="relative flex-1 min-w-[200px]">
                 <Search className="w-4 h-4 text-slate-500 absolute left-3 top-3" />
                 <input
@@ -1427,14 +1759,14 @@ export const AdminDashboard: React.FC = () => {
                   placeholder="Search subject by name or code..."
                   value={subjectSearch}
                   onChange={(e) => setSubjectSearch(e.target.value)}
-                  className="w-full pl-9 pr-4 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-500"
+                  className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-500"
                 />
               </div>
 
               <select
                 value={subjectDeptFilter}
                 onChange={(e) => setSubjectDeptFilter(e.target.value)}
-                className="py-2 px-3 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-300 focus:outline-none"
+                className="py-2 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-300 focus:outline-none"
               >
                 <option value="">All Departments</option>
                 {departments.map((d) => (
@@ -1445,7 +1777,7 @@ export const AdminDashboard: React.FC = () => {
               <select
                 value={subjectStatusFilter}
                 onChange={(e) => setSubjectStatusFilter(e.target.value as any)}
-                className="py-2 px-3 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-300 focus:outline-none"
+                className="py-2 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-300 focus:outline-none"
               >
                 <option value="all">All Statuses</option>
                 <option value="active">Active</option>
@@ -1454,10 +1786,10 @@ export const AdminDashboard: React.FC = () => {
             </div>
 
             {/* Subjects Table */}
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
+            <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xl">
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs">
-                  <thead className="bg-slate-950 border-b border-slate-800 text-slate-400 font-semibold uppercase tracking-wider">
+                  <thead className="bg-slate-950 border-b border-slate-200 text-slate-400 font-semibold uppercase tracking-wider">
                     <tr>
                       <th className="py-3.5 px-4">Subject Name</th>
                       <th className="py-3.5 px-4">Code</th>
@@ -1486,18 +1818,17 @@ export const AdminDashboard: React.FC = () => {
                         })
                         .map((subj) => (
                           <tr key={subj.id} className="hover:bg-slate-800/30 transition-colors">
-                            <td className="py-3.5 px-4 font-bold text-white">{subj.name}</td>
-                            <td className="py-3.5 px-4 font-mono text-sky-400 font-semibold">{subj.code}</td>
+                            <td className="py-3.5 px-4 font-bold text-slate-900">{subj.name}</td>
+                            <td className="py-3.5 px-4 font-mono text-blue-600 font-semibold">{subj.code}</td>
                             <td className="py-3.5 px-4 text-slate-300">{subj.department_name || 'N/A'}</td>
                             <td className="py-3.5 px-4 text-slate-400">{subj.program_name || 'UG'}</td>
                             <td className="py-3.5 px-4 text-slate-400">{subj.year_name || '-'}</td>
                             <td className="py-3.5 px-4 text-slate-400">{subj.semester_name || '-'}</td>
                             <td className="py-3.5 px-4">
-                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
-                                subj.is_active
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${subj.is_active
                                   ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                                  : 'bg-slate-800 text-slate-400 border-slate-700'
-                              }`}>
+                                  : 'bg-slate-800 text-slate-400 border-slate-200'
+                                }`}>
                                 {subj.is_active ? 'Active' : 'Inactive'}
                               </span>
                             </td>
@@ -1520,11 +1851,10 @@ export const AdminDashboard: React.FC = () => {
                               </button>
                               <button
                                 onClick={() => handleToggleSubjectStatus(subj)}
-                                className={`p-1.5 rounded-lg transition-colors ${
-                                  subj.is_active
+                                className={`p-1.5 rounded-lg transition-colors ${subj.is_active
                                     ? 'text-slate-400 hover:text-amber-400 hover:bg-amber-500/10'
                                     : 'text-emerald-400 hover:bg-emerald-500/10'
-                                }`}
+                                  }`}
                                 title={subj.is_active ? 'Deactivate' : 'Activate'}
                               >
                                 <Power className="w-4 h-4" />
@@ -1552,8 +1882,8 @@ export const AdminDashboard: React.FC = () => {
           <div className="space-y-6">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
-                <h3 className="text-lg font-bold text-white flex items-center space-x-2">
-                  <HelpCircle className="w-5 h-5 text-sky-400" />
+                <h3 className="text-lg font-bold text-slate-900 flex items-center space-x-2">
+                  <HelpCircle className="w-5 h-5 text-blue-600" />
                   <span>Question Bank Management</span>
                 </h3>
                 <p className="text-xs text-slate-400">
@@ -1563,7 +1893,7 @@ export const AdminDashboard: React.FC = () => {
 
               <button
                 onClick={openAddQuestionModal}
-                className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 transition-colors"
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 transition-colors"
               >
                 <Plus className="w-4 h-4" />
                 <span>+ Add Question</span>
@@ -1571,7 +1901,7 @@ export const AdminDashboard: React.FC = () => {
             </div>
 
             {/* Filter Bar */}
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-wrap items-center gap-4">
+            <div className="bg-white border border-slate-200 rounded-2xl p-4 flex flex-wrap items-center gap-4">
               <div className="relative flex-1 min-w-[200px]">
                 <Search className="w-4 h-4 text-slate-500 absolute left-3 top-3" />
                 <input
@@ -1579,14 +1909,14 @@ export const AdminDashboard: React.FC = () => {
                   placeholder="Search question text or topic..."
                   value={questionSearch}
                   onChange={(e) => setQuestionSearch(e.target.value)}
-                  className="w-full pl-9 pr-4 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-500"
+                  className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-500"
                 />
               </div>
 
               <select
                 value={questionDeptFilter}
                 onChange={(e) => setQuestionDeptFilter(e.target.value)}
-                className="py-2 px-3 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-300 focus:outline-none"
+                className="py-2 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-300 focus:outline-none"
               >
                 <option value="">All Departments</option>
                 {departments.map((d) => (
@@ -1597,7 +1927,7 @@ export const AdminDashboard: React.FC = () => {
               <select
                 value={questionSubjectFilter}
                 onChange={(e) => setQuestionSubjectFilter(e.target.value)}
-                className="py-2 px-3 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-300 focus:outline-none"
+                className="py-2 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-300 focus:outline-none"
               >
                 <option value="">All Subjects</option>
                 {subjects.map((s) => (
@@ -1608,7 +1938,7 @@ export const AdminDashboard: React.FC = () => {
               <select
                 value={questionStatusFilter}
                 onChange={(e) => setQuestionStatusFilter(e.target.value as any)}
-                className="py-2 px-3 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-300 focus:outline-none"
+                className="py-2 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-300 focus:outline-none"
               >
                 <option value="all">All Statuses</option>
                 <option value="active">Active</option>
@@ -1617,10 +1947,10 @@ export const AdminDashboard: React.FC = () => {
             </div>
 
             {/* Questions Table */}
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
+            <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xl">
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs">
-                  <thead className="bg-slate-950 border-b border-slate-800 text-slate-400 font-semibold uppercase tracking-wider">
+                  <thead className="bg-slate-950 border-b border-slate-200 text-slate-400 font-semibold uppercase tracking-wider">
                     <tr>
                       <th className="py-3.5 px-4 w-12">#</th>
                       <th className="py-3.5 px-4">Question Text</th>
@@ -1657,11 +1987,10 @@ export const AdminDashboard: React.FC = () => {
                             </span>
                           </td>
                           <td className="py-3.5 px-4">
-                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
-                              q.is_active
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${q.is_active
                                 ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                                : 'bg-slate-800 text-slate-400 border-slate-700'
-                            }`}>
+                                : 'bg-slate-800 text-slate-400 border-slate-200'
+                              }`}>
                               {q.is_active ? 'Active' : 'Inactive'}
                             </span>
                           </td>
@@ -1689,11 +2018,10 @@ export const AdminDashboard: React.FC = () => {
                             </button>
                             <button
                               onClick={() => handleToggleQuestionStatus(q)}
-                              className={`p-1.5 rounded-lg transition-colors ${
-                                q.is_active
+                              className={`p-1.5 rounded-lg transition-colors ${q.is_active
                                   ? 'text-slate-400 hover:text-amber-400 hover:bg-amber-500/10'
                                   : 'text-emerald-400 hover:bg-emerald-500/10'
-                              }`}
+                                }`}
                               title={q.is_active ? 'Deactivate' : 'Activate'}
                             >
                               <Power className="w-4 h-4" />
@@ -1720,7 +2048,7 @@ export const AdminDashboard: React.FC = () => {
           <div className="space-y-6">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
-                <h3 className="text-lg font-bold text-white flex items-center space-x-2">
+                <h3 className="text-lg font-bold text-slate-900 flex items-center space-x-2">
                   <Calendar className="w-5 h-5 text-purple-400" />
                   <span>Examination Management & Student Assignment</span>
                 </h3>
@@ -1739,7 +2067,7 @@ export const AdminDashboard: React.FC = () => {
             </div>
 
             {/* Exam Filters */}
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-wrap items-center gap-4">
+            <div className="bg-white border border-slate-200 rounded-2xl p-4 flex flex-wrap items-center gap-4">
               <div className="relative flex-1 min-w-[200px]">
                 <Search className="w-4 h-4 text-slate-500 absolute left-3 top-3" />
                 <input
@@ -1747,14 +2075,14 @@ export const AdminDashboard: React.FC = () => {
                   placeholder="Search examinations..."
                   value={examSearch}
                   onChange={(e) => setExamSearch(e.target.value)}
-                  className="w-full pl-9 pr-4 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-500"
+                  className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-500"
                 />
               </div>
 
               <select
                 value={examStatusFilter}
                 onChange={(e) => setExamStatusFilter(e.target.value)}
-                className="py-2 px-3 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-300 focus:outline-none"
+                className="py-2 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-300 focus:outline-none"
               >
                 <option value="">All Statuses</option>
                 <option value="published">Published</option>
@@ -1764,10 +2092,10 @@ export const AdminDashboard: React.FC = () => {
             </div>
 
             {/* Exams Table */}
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
+            <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xl">
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs">
-                  <thead className="bg-slate-950 border-b border-slate-800 text-slate-400 font-semibold uppercase tracking-wider">
+                  <thead className="bg-slate-950 border-b border-slate-200 text-slate-400 font-semibold uppercase tracking-wider">
                     <tr>
                       <th className="py-3.5 px-4">Exam Title</th>
                       <th className="py-3.5 px-4">Subject</th>
@@ -1796,7 +2124,7 @@ export const AdminDashboard: React.FC = () => {
                         .map((ex) => (
                           <tr key={ex.id} className="hover:bg-slate-800/30 transition-colors">
                             <td className="py-3.5 px-4">
-                              <span className="font-bold text-white block">{ex.title}</span>
+                              <span className="font-bold text-slate-900 block">{ex.title}</span>
                               <span className="text-[11px] text-slate-500 font-mono">Code: {ex.code || `EXAM-${ex.id}`}</span>
                             </td>
                             <td className="py-3.5 px-4 font-medium text-slate-300">{ex.subject_name || 'General'}</td>
@@ -1805,26 +2133,25 @@ export const AdminDashboard: React.FC = () => {
                               {ex.duration_minutes} Mins • {ex.total_questions} Questions
                             </td>
                             <td className="py-3.5 px-4">
-                              <span className="px-2.5 py-1 bg-sky-500/10 border border-sky-500/20 text-sky-400 font-bold rounded-lg">
+                              <span className="px-2.5 py-1 bg-sky-500/10 border border-blue-200 text-blue-600 font-bold rounded-lg">
                                 {ex.assigned_students_count || 0} Students
                               </span>
                             </td>
                             <td className="py-3.5 px-4 text-slate-400">{ex.attempts_count || 0}</td>
                             <td className="py-3.5 px-4">
-                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border uppercase ${
-                                ex.status === 'published'
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border uppercase ${ex.status === 'published'
                                   ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
                                   : ex.status === 'draft'
-                                  ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
-                                  : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
-                              }`}>
+                                    ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                                    : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
+                                }`}>
                                 {ex.status}
                               </span>
                             </td>
                             <td className="py-3.5 px-4 text-right space-x-2">
                               <button
                                 onClick={() => openAssignModal(ex)}
-                                className="px-3 py-1 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-xs font-bold transition-colors inline-flex items-center space-x-1"
+                                className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold transition-colors inline-flex items-center space-x-1"
                               >
                                 <UserCheck className="w-3.5 h-3.5" />
                                 <span>Assign</span>
@@ -1852,8 +2179,8 @@ export const AdminDashboard: React.FC = () => {
           <div className="space-y-6">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
-                <h3 className="text-lg font-bold text-white flex items-center space-x-2">
-                  <FileText className="w-5 h-5 text-sky-400" />
+                <h3 className="text-lg font-bold text-slate-900 flex items-center space-x-2">
+                  <FileText className="w-5 h-5 text-blue-600" />
                   <span>Student Assessment Records</span>
                 </h3>
                 <p className="text-xs text-slate-400">Review scores, cheating detection logs, and manage attempt history</p>
@@ -1869,7 +2196,7 @@ export const AdminDashboard: React.FC = () => {
                 </button>
                 <button
                   onClick={handleExportCSV}
-                  className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold flex items-center space-x-1.5 transition-colors border border-slate-700"
+                  className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold flex items-center space-x-1.5 transition-colors border border-slate-200"
                 >
                   <Download className="w-4 h-4" />
                   <span>CSV Export</span>
@@ -1878,7 +2205,7 @@ export const AdminDashboard: React.FC = () => {
             </div>
 
             {/* Filter Bar */}
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-wrap items-center gap-4">
+            <div className="bg-white border border-slate-200 rounded-2xl p-4 flex flex-wrap items-center gap-4">
               <div className="relative flex-1 min-w-[200px]">
                 <Search className="w-4 h-4 text-slate-500 absolute left-3 top-3" />
                 <input
@@ -1886,14 +2213,14 @@ export const AdminDashboard: React.FC = () => {
                   placeholder="Search student records..."
                   value={recordsSearch}
                   onChange={(e) => setRecordsSearch(e.target.value)}
-                  className="w-full pl-9 pr-4 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-500"
+                  className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-500"
                 />
               </div>
 
               <select
                 value={recordsDeptFilter}
                 onChange={(e) => setRecordsDeptFilter(e.target.value)}
-                className="py-2 px-3 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-300 focus:outline-none"
+                className="py-2 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-300 focus:outline-none"
               >
                 <option value="">All Departments</option>
                 {departments.map((d) => (
@@ -1903,10 +2230,10 @@ export const AdminDashboard: React.FC = () => {
             </div>
 
             {/* Records Table */}
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
+            <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xl">
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs">
-                  <thead className="bg-slate-950 border-b border-slate-800 text-slate-400 font-semibold uppercase tracking-wider">
+                  <thead className="bg-slate-950 border-b border-slate-200 text-slate-400 font-semibold uppercase tracking-wider">
                     <tr>
                       <th className="py-3.5 px-4">Student Name & Roll</th>
                       <th className="py-3.5 px-4">Department</th>
@@ -1928,32 +2255,30 @@ export const AdminDashboard: React.FC = () => {
                       .map((rec) => (
                         <tr key={`${rec.student_id}-${rec.attempt_id || 0}`} className="hover:bg-slate-800/30 transition-colors">
                           <td className="py-3.5 px-4">
-                            <span className="font-bold text-white block">{rec.name}</span>
-                            <span className="font-mono text-sky-400 text-[11px]">{rec.enrollment_no}</span>
+                            <span className="font-bold text-slate-900 block">{rec.name}</span>
+                            <span className="font-mono text-blue-600 text-[11px]">{rec.enrollment_no}</span>
                           </td>
                           <td className="py-3.5 px-4 text-slate-300">{rec.department}</td>
                           <td className="py-3.5 px-4 text-slate-400">{rec.exam_title || 'General DSA Assessment'}</td>
-                          <td className="py-3.5 px-4 font-mono font-bold text-white">{rec.score ?? '-'}</td>
+                          <td className="py-3.5 px-4 font-mono font-bold text-slate-900">{rec.score ?? '-'}</td>
                           <td className="py-3.5 px-4 font-mono font-bold text-emerald-400">
                             {rec.percentage !== null ? `${rec.percentage.toFixed(1)}%` : '-'}
                           </td>
                           <td className="py-3.5 px-4">
                             <div className="flex items-center space-x-2">
-                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                (rec.tab_switch_count || 0) > 0 ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' : 'bg-slate-800 text-slate-400'
-                              }`}>
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${(rec.tab_switch_count || 0) > 0 ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' : 'bg-slate-800 text-slate-400'
+                                }`}>
                                 {rec.tab_switch_count || 0} Tab Switches
                               </span>
                             </div>
                           </td>
                           <td className="py-3.5 px-4">
-                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border uppercase ${
-                              rec.status === 'completed'
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border uppercase ${rec.status === 'completed'
                                 ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
                                 : rec.status === 'timed_out'
-                                ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
-                                : 'bg-sky-500/10 text-sky-400 border-sky-500/20'
-                            }`}>
+                                  ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                                  : 'bg-blue-50 text-blue-700 border-blue-200'
+                              }`}>
                               {rec.status}
                             </span>
                           </td>
@@ -1986,10 +2311,10 @@ export const AdminDashboard: React.FC = () => {
 
         {/* 8. SETTINGS TAB */}
         {activeTab === 'settings' && (
-          <div className="max-w-2xl bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-6 shadow-xl">
+          <div className="max-w-2xl bg-white border border-slate-200 rounded-2xl p-6 space-y-6 shadow-xl">
             <div>
-              <h3 className="text-lg font-bold text-white flex items-center space-x-2">
-                <Sliders className="w-5 h-5 text-sky-400" />
+              <h3 className="text-lg font-bold text-slate-900 flex items-center space-x-2">
+                <Sliders className="w-5 h-5 text-blue-600" />
                 <span>Default Assessment Parameters</span>
               </h3>
               <p className="text-xs text-slate-400">
@@ -2006,7 +2331,7 @@ export const AdminDashboard: React.FC = () => {
                   max={200}
                   value={settingsQuestionCount}
                   onChange={(e) => setSettingsQuestionCount(parseInt(e.target.value, 10))}
-                  className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-white font-mono"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-mono"
                 />
               </div>
 
@@ -2018,7 +2343,7 @@ export const AdminDashboard: React.FC = () => {
                   max={300}
                   value={settingsTimeLimit}
                   onChange={(e) => setSettingsTimeLimit(parseInt(e.target.value, 10))}
-                  className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-white font-mono"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-mono"
                 />
               </div>
 
@@ -2026,40 +2351,12 @@ export const AdminDashboard: React.FC = () => {
                 <button
                   type="submit"
                   disabled={settingsSaving}
-                  className="px-5 py-2.5 bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white rounded-xl font-bold transition-colors"
+                  className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl font-bold transition-colors"
                 >
                   {settingsSaving ? 'Saving...' : 'Save Settings'}
                 </button>
               </div>
             </form>
-
-            {/* Danger Zone / Data Management Card */}
-            <div className="bg-rose-950/20 border border-rose-900/50 rounded-2xl p-6 space-y-4 shadow-xl">
-              <div className="flex items-center space-x-2 text-rose-400">
-                <AlertTriangle className="w-5 h-5 flex-shrink-0" />
-                <h4 className="text-sm font-bold uppercase tracking-wider">Danger Zone • System Data Management</h4>
-              </div>
-              <p className="text-xs text-rose-300/80 leading-relaxed">
-                Permanently purge all institutional application records from the database, including departments, subjects, students, questions, examinations, student attempts, and results.
-              </p>
-              <div className="p-3 bg-rose-950/40 border border-rose-900/40 rounded-xl text-[11px] text-rose-300 space-y-1">
-                <p>• <strong>Will be removed:</strong> Departments, Academic Structure, Subjects, Questions, Students, Exams, Attempts, Answers.</p>
-                <p>• <strong>Preserved:</strong> Admin credentials, database schema, and server configuration.</p>
-              </div>
-              <div className="pt-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setClearDataPhrase('');
-                    setShowClearDataModal(true);
-                  }}
-                  className="px-4 py-2.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold transition-colors flex items-center space-x-2"
-                >
-                  <Trash2 className="w-4 h-4" />
-                  <span>Clear All Application Data</span>
-                </button>
-              </div>
-            </div>
           </div>
         )}
 
@@ -2067,21 +2364,21 @@ export const AdminDashboard: React.FC = () => {
         {activeTab === 'exports' && (
           <div className="space-y-6">
             <div>
-              <h3 className="text-lg font-bold text-white flex items-center space-x-2">
-                <Download className="w-5 h-5 text-sky-400" />
+              <h3 className="text-lg font-bold text-slate-900 flex items-center space-x-2">
+                <Download className="w-5 h-5 text-blue-600" />
                 <span>Institutional Examination Reports</span>
               </h3>
               <p className="text-xs text-slate-400">Download formatted reports with scores, percentages, and cheating audit statistics</p>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
+              <div className="bg-white border border-slate-200 rounded-2xl p-6 space-y-4">
                 <div className="flex items-center space-x-3">
                   <div className="p-3 bg-emerald-500/10 text-emerald-400 rounded-xl">
                     <FileSpreadsheet className="w-6 h-6" />
                   </div>
                   <div>
-                    <h4 className="text-sm font-bold text-white">Full Assessment Export (Excel)</h4>
+                    <h4 className="text-sm font-bold text-slate-900">Full Assessment Export (Excel)</h4>
                     <p className="text-xs text-slate-400">Standard formatted .xlsx workbook with student scores and percentages</p>
                   </div>
                 </div>
@@ -2093,19 +2390,19 @@ export const AdminDashboard: React.FC = () => {
                 </button>
               </div>
 
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
+              <div className="bg-white border border-slate-200 rounded-2xl p-6 space-y-4">
                 <div className="flex items-center space-x-3">
-                  <div className="p-3 bg-sky-500/10 text-sky-400 rounded-xl">
+                  <div className="p-3 bg-blue-50 text-blue-700 rounded-xl">
                     <FileText className="w-6 h-6" />
                   </div>
                   <div>
-                    <h4 className="text-sm font-bold text-white">Tabular CSV Export</h4>
+                    <h4 className="text-sm font-bold text-slate-900">Tabular CSV Export</h4>
                     <p className="text-xs text-slate-400">Raw tabular data suitable for statistical processing</p>
                   </div>
                 </div>
                 <button
                   onClick={handleExportCSV}
-                  className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-bold transition-colors border border-slate-700"
+                  className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-bold transition-colors border border-slate-200"
                 >
                   Download CSV (.csv)
                 </button>
@@ -2119,11 +2416,11 @@ export const AdminDashboard: React.FC = () => {
       {/* MODAL 1: ADD DEPARTMENT (SECTION 3 - ONLY FULL NAME)      */}
       {/* ========================================================= */}
       {showAddDeptModal && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-              <h4 className="text-base font-bold text-white flex items-center space-x-2">
-                <Building className="w-5 h-5 text-sky-400" />
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200">
+              <h4 className="text-base font-bold text-slate-900 flex items-center space-x-2">
+                <Building className="w-5 h-5 text-blue-600" />
                 <span>+ Add Department</span>
               </h4>
               <button onClick={() => setShowAddDeptModal(false)} className="text-slate-400 hover:text-white">
@@ -2141,7 +2438,7 @@ export const AdminDashboard: React.FC = () => {
                   placeholder="e.g. Computer Science & Engineering"
                   value={newDeptName}
                   onChange={(e) => setNewDeptName(e.target.value)}
-                  className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-white text-xs focus:outline-none focus:border-sky-500"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white text-xs focus:outline-none focus:border-sky-500"
                 />
               </div>
 
@@ -2156,7 +2453,7 @@ export const AdminDashboard: React.FC = () => {
                 <button
                   type="submit"
                   disabled={deptCreating}
-                  className="flex-1 py-2.5 bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white rounded-xl font-bold transition-colors"
+                  className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl font-bold transition-colors"
                 >
                   {deptCreating ? 'Creating...' : 'Create Department'}
                 </button>
@@ -2170,11 +2467,11 @@ export const AdminDashboard: React.FC = () => {
       {/* MODAL 2: ADD / EDIT SUBJECT (SECTIONS 5, 11, 12, 13)       */}
       {/* ========================================================= */}
       {showAddSubjectModal && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-lg w-full p-6 space-y-5 shadow-2xl">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-              <h4 className="text-base font-bold text-white flex items-center space-x-2">
-                <BookOpen className="w-5 h-5 text-sky-400" />
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-lg w-full p-6 space-y-5 shadow-2xl">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200">
+              <h4 className="text-base font-bold text-slate-900 flex items-center space-x-2">
+                <BookOpen className="w-5 h-5 text-blue-600" />
                 <span>{editingSubject ? 'Edit Subject' : '+ Add Subject (Manual)'}</span>
               </h4>
               <button onClick={() => setShowAddSubjectModal(false)} className="text-slate-400 hover:text-white">
@@ -2191,7 +2488,7 @@ export const AdminDashboard: React.FC = () => {
                   placeholder="e.g. Data Structures"
                   value={subjectFormName}
                   onChange={(e) => setSubjectFormName(e.target.value)}
-                  className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-white"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white"
                 />
               </div>
 
@@ -2203,17 +2500,27 @@ export const AdminDashboard: React.FC = () => {
                   placeholder="e.g. CS301"
                   value={subjectFormCode}
                   onChange={(e) => setSubjectFormCode(e.target.value)}
-                  className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-white font-mono"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-mono"
                 />
               </div>
 
               <div>
-                <label className="block text-slate-400 font-semibold mb-1">Department *</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-slate-400 font-semibold">Department *</label>
+                  {currentUser?.role === 'hod' && (
+                    <span className="text-amber-400 text-[10px] flex items-center gap-1 font-semibold">
+                      <Lock className="w-2.5 h-2.5" /> Locked to {currentUser.department_name || 'your department'}
+                    </span>
+                  )}
+                </div>
                 <select
                   required
+                  disabled={currentUser?.role === 'hod'}
                   value={subjectFormDeptId}
                   onChange={(e) => setSubjectFormDeptId(e.target.value ? Number(e.target.value) : '')}
-                  className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-white"
+                  className={`w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white ${
+                    currentUser?.role === 'hod' ? 'opacity-80 cursor-not-allowed' : ''
+                  }`}
                 >
                   <option value="">Select Department...</option>
                   {departments.length === 0 ? (
@@ -2241,7 +2548,7 @@ export const AdminDashboard: React.FC = () => {
                       const validSems = getFilteredSemesters(defaultYear, newPId);
                       setSubjectFormSemId(validSems.length > 0 ? validSems[0].id : '');
                     }}
-                    className="w-full p-2 bg-slate-950 border border-slate-800 rounded-xl text-white text-[11px]"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white text-[11px]"
                   >
                     <option value="">Select Program...</option>
                     {programs.map((p) => (
@@ -2259,7 +2566,7 @@ export const AdminDashboard: React.FC = () => {
                       const validSems = getFilteredSemesters(newYId, subjectFormProgId);
                       setSubjectFormSemId(validSems.length > 0 ? validSems[0].id : '');
                     }}
-                    className="w-full p-2 bg-slate-950 border border-slate-800 rounded-xl text-white text-[11px]"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white text-[11px]"
                   >
                     <option value="">Select Year...</option>
                     {getFilteredYears(subjectFormProgId).map((y) => (
@@ -2272,7 +2579,7 @@ export const AdminDashboard: React.FC = () => {
                   <select
                     value={subjectFormSemId}
                     onChange={(e) => setSubjectFormSemId(e.target.value ? Number(e.target.value) : '')}
-                    className="w-full p-2 bg-slate-950 border border-slate-800 rounded-xl text-white text-[11px]"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white text-[11px]"
                   >
                     <option value="">Select Sem...</option>
                     {getFilteredSemesters(subjectFormYearId, subjectFormProgId).map((s) => (
@@ -2292,10 +2599,9 @@ export const AdminDashboard: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  disabled={subjectSaving}
-                  className="flex-1 py-2.5 bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white rounded-xl font-bold transition-colors"
+                  className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold"
                 >
-                  {subjectSaving ? 'Saving...' : (editingSubject ? 'Update Subject' : 'Add Subject')}
+                  {editingSubject ? 'Update Subject' : 'Add Subject'}
                 </button>
               </div>
             </form>
@@ -2307,11 +2613,11 @@ export const AdminDashboard: React.FC = () => {
       {/* MODAL 3: ADD / EDIT STUDENT (SECTIONS 7, 8, 9)            */}
       {/* ========================================================= */}
       {showAddStudentModal && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-              <h4 className="text-base font-bold text-white flex items-center space-x-2">
-                <UserPlus className="w-5 h-5 text-sky-400" />
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200">
+              <h4 className="text-base font-bold text-slate-900 flex items-center space-x-2">
+                <UserPlus className="w-5 h-5 text-blue-600" />
                 <span>{editingStudent ? 'Edit Student' : '+ Add Enrolled Student'}</span>
               </h4>
               <button onClick={() => setShowAddStudentModal(false)} className="text-slate-400 hover:text-white">
@@ -2328,7 +2634,7 @@ export const AdminDashboard: React.FC = () => {
                   placeholder="e.g. BT26F05F001"
                   value={stFormEnrollment}
                   onChange={(e) => setStFormEnrollment(e.target.value)}
-                  className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-white font-mono"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-mono"
                 />
               </div>
 
@@ -2340,18 +2646,28 @@ export const AdminDashboard: React.FC = () => {
                   placeholder="e.g. Alex Mercer"
                   value={stFormName}
                   onChange={(e) => setStFormName(e.target.value)}
-                  className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-white"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Department *</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-slate-400 font-semibold">Department *</label>
+                    {currentUser?.role === 'hod' && (
+                      <span className="text-amber-400 text-[10px] flex items-center gap-1 font-semibold">
+                        <Lock className="w-2.5 h-2.5" /> Locked
+                      </span>
+                    )}
+                  </div>
                   <select
                     required
+                    disabled={currentUser?.role === 'hod'}
                     value={stFormDept}
                     onChange={(e) => setStFormDept(e.target.value)}
-                    className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-white"
+                    className={`w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white ${
+                      currentUser?.role === 'hod' ? 'opacity-80 cursor-not-allowed' : ''
+                    }`}
                   >
                     <option value="">Select Department...</option>
                     {departments.map((d) => (
@@ -2364,7 +2680,7 @@ export const AdminDashboard: React.FC = () => {
                   <select
                     value={stFormGender}
                     onChange={(e) => setStFormGender(e.target.value)}
-                    className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-white"
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white"
                   >
                     <option value="Male">Male</option>
                     <option value="Female">Female</option>
@@ -2386,7 +2702,7 @@ export const AdminDashboard: React.FC = () => {
                       setStFormYear(defaultYear);
                       setStFormSem('Semester 1');
                     }}
-                    className="w-full p-2 bg-slate-950 border border-slate-800 rounded-xl text-white text-[11px]"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white text-[11px]"
                   >
                     <option value="UG">UG (B.Tech)</option>
                     <option value="M.Tech">M.Tech</option>
@@ -2402,7 +2718,7 @@ export const AdminDashboard: React.FC = () => {
                       const sems = getStudentSemestersForYear(stFormProg, newYear);
                       setStFormSem(sems[0]);
                     }}
-                    className="w-full p-2 bg-slate-950 border border-slate-800 rounded-xl text-white text-[11px]"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white text-[11px]"
                   >
                     {stFormProg === 'UG' ? (
                       <>
@@ -2424,7 +2740,7 @@ export const AdminDashboard: React.FC = () => {
                   <select
                     value={stFormSem}
                     onChange={(e) => setStFormSem(e.target.value)}
-                    className="w-full p-2 bg-slate-950 border border-slate-800 rounded-xl text-white text-[11px]"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white text-[11px]"
                   >
                     {getStudentSemestersForYear(stFormProg, stFormYear).map((sem) => (
                       <option key={sem} value={sem}>{sem}</option>
@@ -2440,7 +2756,7 @@ export const AdminDashboard: React.FC = () => {
                   placeholder="Default (Roll Number)"
                   value={stFormPassword}
                   onChange={(e) => setStFormPassword(e.target.value)}
-                  className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-white"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white"
                 />
               </div>
 
@@ -2454,10 +2770,9 @@ export const AdminDashboard: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  disabled={studentSaving}
-                  className="flex-1 py-2.5 bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white rounded-xl font-bold transition-colors"
+                  className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold"
                 >
-                  {studentSaving ? 'Saving...' : (editingStudent ? 'Save Changes' : 'Register Student')}
+                  {editingStudent ? 'Save Changes' : 'Register Student'}
                 </button>
               </div>
             </form>
@@ -2469,10 +2784,10 @@ export const AdminDashboard: React.FC = () => {
       {/* MODAL 4: BULK IMPORT STUDENTS                             */}
       {/* ========================================================= */}
       {showBulkImportModal && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-lg w-full p-6 space-y-4 shadow-2xl">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-              <h4 className="text-base font-bold text-white flex items-center space-x-2">
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-lg w-full p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200">
+              <h4 className="text-base font-bold text-slate-900 flex items-center space-x-2">
                 <UploadCloud className="w-5 h-5 text-emerald-400" />
                 <span>Bulk Student Roll-List Import</span>
               </h4>
@@ -2487,12 +2802,22 @@ export const AdminDashboard: React.FC = () => {
               </p>
 
               <div>
-                <label className="block text-slate-400 font-semibold mb-1">Target Department *</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-slate-400 font-semibold">Target Department *</label>
+                  {currentUser?.role === 'hod' && (
+                    <span className="text-amber-400 text-[10px] flex items-center gap-1 font-semibold">
+                      <Lock className="w-2.5 h-2.5" /> Locked to {currentUser.department_name || 'your department'}
+                    </span>
+                  )}
+                </div>
                 <select
                   required
+                  disabled={currentUser?.role === 'hod'}
                   value={importDept}
                   onChange={(e) => setImportDept(e.target.value)}
-                  className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-white"
+                  className={`w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white ${
+                    currentUser?.role === 'hod' ? 'opacity-80 cursor-not-allowed' : ''
+                  }`}
                 >
                   <option value="">Select Department...</option>
                   {departments.map((d) => (
@@ -2511,7 +2836,7 @@ export const AdminDashboard: React.FC = () => {
                       setImportYear(e.target.value === 'UG' ? '1st Year' : 'M.Tech 1st Year');
                       setImportSem('Semester 1');
                     }}
-                    className="w-full p-2 bg-slate-950 border border-slate-800 rounded-xl text-white text-[11px]"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white text-[11px]"
                   >
                     <option value="UG">UG</option>
                     <option value="M.Tech">M.Tech</option>
@@ -2526,7 +2851,7 @@ export const AdminDashboard: React.FC = () => {
                       const sems = getStudentSemestersForYear(importProg, e.target.value);
                       setImportSem(sems[0]);
                     }}
-                    className="w-full p-2 bg-slate-950 border border-slate-800 rounded-xl text-white text-[11px]"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white text-[11px]"
                   >
                     {importProg === 'UG' ? (
                       <>
@@ -2548,7 +2873,7 @@ export const AdminDashboard: React.FC = () => {
                   <select
                     value={importSem}
                     onChange={(e) => setImportSem(e.target.value)}
-                    className="w-full p-2 bg-slate-950 border border-slate-800 rounded-xl text-white text-[11px]"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white text-[11px]"
                   >
                     {getStudentSemestersForYear(importProg, importYear).map(s => (
                       <option key={s} value={s}>{s}</option>
@@ -2564,7 +2889,7 @@ export const AdminDashboard: React.FC = () => {
                   required
                   accept=".csv,.xlsx,.xls,.pdf"
                   onChange={(e) => setImportFile(e.target.files ? e.target.files[0] : null)}
-                  className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-slate-300"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-300"
                 />
               </div>
 
@@ -2593,10 +2918,10 @@ export const AdminDashboard: React.FC = () => {
       {/* MODAL 5: CREATE / EDIT EXAMINATION (SECTIONS 17-22)       */}
       {/* ========================================================= */}
       {showCreateExamModal && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-lg w-full p-6 space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-              <h4 className="text-base font-bold text-white flex items-center space-x-2">
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-lg w-full p-6 space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200">
+              <h4 className="text-base font-bold text-slate-900 flex items-center space-x-2">
                 <Calendar className="w-5 h-5 text-purple-400" />
                 <span>{editingExam ? 'Edit Examination' : '+ Create New Examination'}</span>
               </h4>
@@ -2614,15 +2939,23 @@ export const AdminDashboard: React.FC = () => {
                   placeholder="e.g. Data Structures Midterm Test"
                   value={examFormTitle}
                   onChange={(e) => setExamFormTitle(e.target.value)}
-                  className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-white"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white"
                 />
               </div>
 
               {/* Department First per Section 18 & 19 */}
               <div>
-                <label className="block text-slate-400 font-semibold mb-1">Department *</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-slate-400 font-semibold">Department *</label>
+                  {currentUser?.role === 'hod' && (
+                    <span className="text-amber-400 text-[10px] flex items-center gap-1 font-semibold">
+                      <Lock className="w-2.5 h-2.5" /> Locked to {currentUser.department_name || 'your department'}
+                    </span>
+                  )}
+                </div>
                 <select
                   required
+                  disabled={currentUser?.role === 'hod'}
                   value={examFormDeptId}
                   onChange={(e) => {
                     const newDeptId = e.target.value ? Number(e.target.value) : '';
@@ -2631,7 +2964,9 @@ export const AdminDashboard: React.FC = () => {
                     const matching = subjects.filter(s => s.department_id === newDeptId && s.is_active);
                     setExamFormSubjectId(matching.length > 0 ? matching[0].id : '');
                   }}
-                  className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-white"
+                  className={`w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white ${
+                    currentUser?.role === 'hod' ? 'opacity-80 cursor-not-allowed' : ''
+                  }`}
                 >
                   <option value="">Select Department...</option>
                   {departments.map((d) => (
@@ -2655,7 +2990,7 @@ export const AdminDashboard: React.FC = () => {
                       const validSems = getFilteredSemesters(defaultYear, newPId);
                       setExamFormSemId(validSems.length > 0 ? validSems[0].id : '');
                     }}
-                    className="w-full p-2 bg-slate-950 border border-slate-800 rounded-xl text-white text-[11px]"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white text-[11px]"
                   >
                     <option value="">All Programs</option>
                     {programs.map((p) => (
@@ -2673,7 +3008,7 @@ export const AdminDashboard: React.FC = () => {
                       const validSems = getFilteredSemesters(newYId, examFormProgId);
                       setExamFormSemId(validSems.length > 0 ? validSems[0].id : '');
                     }}
-                    className="w-full p-2 bg-slate-950 border border-slate-800 rounded-xl text-white text-[11px]"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white text-[11px]"
                   >
                     <option value="">All Years</option>
                     {getFilteredYears(examFormProgId).map((y) => (
@@ -2686,7 +3021,7 @@ export const AdminDashboard: React.FC = () => {
                   <select
                     value={examFormSemId}
                     onChange={(e) => setExamFormSemId(e.target.value ? Number(e.target.value) : '')}
-                    className="w-full p-2 bg-slate-950 border border-slate-800 rounded-xl text-white text-[11px]"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white text-[11px]"
                   >
                     <option value="">All Semesters</option>
                     {getFilteredSemesters(examFormYearId, examFormProgId).map((s) => (
@@ -2703,7 +3038,7 @@ export const AdminDashboard: React.FC = () => {
                   required
                   value={examFormSubjectId}
                   onChange={(e) => setExamFormSubjectId(e.target.value ? Number(e.target.value) : '')}
-                  className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-white"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white"
                 >
                   <option value="">Select Subject...</option>
                   {displayExamSubjects.length === 0 ? (
@@ -2729,7 +3064,7 @@ export const AdminDashboard: React.FC = () => {
                     min={1}
                     value={examFormDuration}
                     onChange={(e) => setExamFormDuration(parseInt(e.target.value, 10) || 60)}
-                    className="w-full p-2 bg-slate-950 border border-slate-800 rounded-xl text-white"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white"
                   />
                 </div>
                 <div>
@@ -2739,7 +3074,7 @@ export const AdminDashboard: React.FC = () => {
                     min={1}
                     value={examFormQuestionsCount}
                     onChange={(e) => setExamFormQuestionsCount(parseInt(e.target.value, 10) || 25)}
-                    className="w-full p-2 bg-slate-950 border border-slate-800 rounded-xl text-white"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white"
                   />
                 </div>
                 <div>
@@ -2749,7 +3084,7 @@ export const AdminDashboard: React.FC = () => {
                     min={1}
                     value={examFormMarksPerQ}
                     onChange={(e) => setExamFormMarksPerQ(parseInt(e.target.value, 10) || 1)}
-                    className="w-full p-2 bg-slate-950 border border-slate-800 rounded-xl text-white"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white"
                   />
                 </div>
                 <div>
@@ -2760,7 +3095,7 @@ export const AdminDashboard: React.FC = () => {
                     max={100}
                     value={examFormPassingPct}
                     onChange={(e) => setExamFormPassingPct(parseFloat(e.target.value) || 40)}
-                    className="w-full p-2 bg-slate-950 border border-slate-800 rounded-xl text-white"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white"
                   />
                 </div>
               </div>
@@ -2771,7 +3106,7 @@ export const AdminDashboard: React.FC = () => {
                   <select
                     value={examFormSelectionMode}
                     onChange={(e) => setExamFormSelectionMode(e.target.value as any)}
-                    className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-white"
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white"
                   >
                     <option value="random">Random from Subject Bank</option>
                     <option value="manual">Manual Selection</option>
@@ -2782,7 +3117,7 @@ export const AdminDashboard: React.FC = () => {
                   <select
                     value={examFormStatus}
                     onChange={(e) => setExamFormStatus(e.target.value)}
-                    className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-white"
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white"
                   >
                     <option value="published">Published (Available)</option>
                     <option value="draft">Draft (Hidden)</option>
@@ -2798,7 +3133,7 @@ export const AdminDashboard: React.FC = () => {
                     type="date"
                     value={examFormStartDate}
                     onChange={(e) => setExamFormStartDate(e.target.value)}
-                    className="w-full p-2 bg-slate-950 border border-slate-800 rounded-xl text-white"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white"
                   />
                 </div>
                 <div>
@@ -2807,7 +3142,7 @@ export const AdminDashboard: React.FC = () => {
                     type="date"
                     value={examFormEndDate}
                     onChange={(e) => setExamFormEndDate(e.target.value)}
-                    className="w-full p-2 bg-slate-950 border border-slate-800 rounded-xl text-white"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white"
                   />
                 </div>
               </div>
@@ -2822,10 +3157,9 @@ export const AdminDashboard: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  disabled={examSaving}
-                  className="flex-1 py-2.5 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white rounded-xl font-bold transition-colors"
+                  className="flex-1 py-2.5 bg-purple-600 hover:bg-purple-500 text-white rounded-xl font-bold"
                 >
-                  {examSaving ? 'Saving...' : (editingExam ? 'Save Changes' : 'Create Exam')}
+                  {editingExam ? 'Save Changes' : 'Create Exam'}
                 </button>
               </div>
             </form>
@@ -2837,12 +3171,12 @@ export const AdminDashboard: React.FC = () => {
       {/* MODAL 6: ASSIGN STUDENTS TO EXAM (SECTIONS 13, 16)        */}
       {/* ========================================================= */}
       {assigningExam && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-3xl w-full p-6 space-y-4 shadow-2xl flex flex-col max-h-[85vh]">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-3xl w-full p-6 space-y-4 shadow-2xl flex flex-col max-h-[85vh]">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200">
               <div>
-                <h4 className="text-base font-bold text-white flex items-center space-x-2">
-                  <UserCheck className="w-5 h-5 text-sky-400" />
+                <h4 className="text-base font-bold text-slate-900 flex items-center space-x-2">
+                  <UserCheck className="w-5 h-5 text-blue-600" />
                   <span>Assign Students to: {assigningExam.title}</span>
                 </h4>
                 <p className="text-xs text-slate-400">
@@ -2863,14 +3197,14 @@ export const AdminDashboard: React.FC = () => {
                   placeholder="Filter students by roll or name..."
                   value={assignSearch}
                   onChange={(e) => setAssignSearch(e.target.value)}
-                  className="w-full px-3 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-white"
+                  className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-white"
                 />
               </div>
 
               <select
                 value={assignFilterDept}
                 onChange={(e) => setAssignFilterDept(e.target.value)}
-                className="py-1.5 px-3 bg-slate-950 border border-slate-800 rounded-xl text-white"
+                className="py-1.5 px-3 bg-slate-50 border border-slate-200 rounded-xl text-white"
               >
                 <option value="">All Departments</option>
                 {departments.map((d) => (
@@ -2887,7 +3221,7 @@ export const AdminDashboard: React.FC = () => {
                       .map(st => st.id);
                     setSelectedStudentIdsToAssign(Array.from(new Set([...selectedStudentIdsToAssign, ...filtered])));
                   }}
-                  className="px-3 py-1 bg-sky-500/10 hover:bg-sky-500/20 text-sky-400 border border-sky-500/30 rounded-lg font-bold"
+                  className="px-3 py-1 bg-sky-500/10 hover:bg-sky-500/20 text-blue-600 border border-blue-200 rounded-lg font-bold"
                 >
                   Select All Filtered
                 </button>
@@ -2905,7 +3239,7 @@ export const AdminDashboard: React.FC = () => {
             </div>
 
             {/* Students Selection List */}
-            <div className="flex-1 overflow-y-auto border border-slate-800 rounded-2xl divide-y divide-slate-800/60 bg-slate-950/60 text-xs">
+            <div className="flex-1 overflow-y-auto border border-slate-200 rounded-2xl divide-y divide-slate-800/60 bg-slate-950/60 text-xs">
               {studentsList
                 .filter(st => {
                   const matchSearch = !assignSearch || st.enrollment_no.toLowerCase().includes(assignSearch.toLowerCase()) || st.name.toLowerCase().includes(assignSearch.toLowerCase());
@@ -2917,9 +3251,8 @@ export const AdminDashboard: React.FC = () => {
                   return (
                     <label
                       key={st.id}
-                      className={`flex items-center justify-between p-3 cursor-pointer transition-colors ${
-                        isChecked ? 'bg-sky-500/10' : 'hover:bg-slate-800/40'
-                      }`}
+                      className={`flex items-center justify-between p-3 cursor-pointer transition-colors ${isChecked ? 'bg-sky-500/10' : 'hover:bg-slate-800/40'
+                        }`}
                     >
                       <div className="flex items-center space-x-3">
                         <input
@@ -2932,11 +3265,11 @@ export const AdminDashboard: React.FC = () => {
                               setSelectedStudentIdsToAssign(prev => prev.filter(id => id !== st.id));
                             }
                           }}
-                          className="w-4 h-4 rounded border-slate-700 text-sky-600 focus:ring-0"
+                          className="w-4 h-4 rounded border-slate-200 text-sky-600 focus:ring-0"
                         />
                         <div>
-                          <p className="font-bold text-white">{st.name}</p>
-                          <p className="text-[11px] font-mono text-sky-400">{st.enrollment_no}</p>
+                          <p className="font-bold text-slate-900">{st.name}</p>
+                          <p className="text-[11px] font-mono text-blue-600">{st.enrollment_no}</p>
                         </div>
                       </div>
                       <div className="text-right">
@@ -2948,7 +3281,7 @@ export const AdminDashboard: React.FC = () => {
                 })}
             </div>
 
-            <div className="flex items-center justify-between pt-2 border-t border-slate-800">
+            <div className="flex items-center justify-between pt-2 border-t border-slate-200">
               <button
                 type="button"
                 onClick={() => setAssigningExam(null)}
@@ -2959,7 +3292,7 @@ export const AdminDashboard: React.FC = () => {
               <button
                 type="button"
                 onClick={handleSaveStudentAssignments}
-                className="px-5 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-xl font-bold"
+                className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold"
               >
                 Save Exam Assignments
               </button>
@@ -2972,11 +3305,11 @@ export const AdminDashboard: React.FC = () => {
       {/* MODAL 7: ADD / EDIT QUESTION                              */}
       {/* ========================================================= */}
       {showAddQuestionModal && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-xl w-full p-6 space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-              <h4 className="text-base font-bold text-white flex items-center space-x-2">
-                <HelpCircle className="w-5 h-5 text-sky-400" />
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-xl w-full p-6 space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200">
+              <h4 className="text-base font-bold text-slate-900 flex items-center space-x-2">
+                <HelpCircle className="w-5 h-5 text-blue-600" />
                 <span>{editingQuestion ? 'Edit Question' : '+ Add Question to Question Bank'}</span>
               </h4>
               <button onClick={() => setShowAddQuestionModal(false)} className="text-slate-400 hover:text-white">
@@ -2998,7 +3331,7 @@ export const AdminDashboard: React.FC = () => {
                         setQFormDeptId(sObj.department_id);
                       }
                     }}
-                    className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-white"
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white"
                   >
                     <option value="">General (No specific subject)</option>
                     {subjects.map((s) => (
@@ -3007,11 +3340,21 @@ export const AdminDashboard: React.FC = () => {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Department</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-slate-400 font-semibold">Department</label>
+                    {currentUser?.role === 'hod' && (
+                      <span className="text-amber-400 text-[10px] flex items-center gap-1 font-semibold">
+                        <Lock className="w-2.5 h-2.5" /> Locked
+                      </span>
+                    )}
+                  </div>
                   <select
+                    disabled={currentUser?.role === 'hod'}
                     value={qFormDeptId}
                     onChange={(e) => setQFormDeptId(e.target.value ? Number(e.target.value) : '')}
-                    className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-white"
+                    className={`w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white ${
+                      currentUser?.role === 'hod' ? 'opacity-80 cursor-not-allowed' : ''
+                    }`}
                   >
                     <option value="">All Departments</option>
                     {departments.map((d) => (
@@ -3029,7 +3372,7 @@ export const AdminDashboard: React.FC = () => {
                   placeholder="e.g. Which of the following is a linear data structure?"
                   value={qFormText}
                   onChange={(e) => setQFormText(e.target.value)}
-                  className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-white"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white"
                 />
               </div>
 
@@ -3041,7 +3384,7 @@ export const AdminDashboard: React.FC = () => {
                     required
                     value={qFormOptA}
                     onChange={(e) => setQFormOptA(e.target.value)}
-                    className="w-full p-2 bg-slate-950 border border-slate-800 rounded-xl text-white"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white"
                   />
                 </div>
                 <div>
@@ -3051,7 +3394,7 @@ export const AdminDashboard: React.FC = () => {
                     required
                     value={qFormOptB}
                     onChange={(e) => setQFormOptB(e.target.value)}
-                    className="w-full p-2 bg-slate-950 border border-slate-800 rounded-xl text-white"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white"
                   />
                 </div>
                 <div>
@@ -3061,7 +3404,7 @@ export const AdminDashboard: React.FC = () => {
                     required
                     value={qFormOptC}
                     onChange={(e) => setQFormOptC(e.target.value)}
-                    className="w-full p-2 bg-slate-950 border border-slate-800 rounded-xl text-white"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white"
                   />
                 </div>
                 <div>
@@ -3071,7 +3414,7 @@ export const AdminDashboard: React.FC = () => {
                     required
                     value={qFormOptD}
                     onChange={(e) => setQFormOptD(e.target.value)}
-                    className="w-full p-2 bg-slate-950 border border-slate-800 rounded-xl text-white"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white"
                   />
                 </div>
               </div>
@@ -3082,7 +3425,7 @@ export const AdminDashboard: React.FC = () => {
                   <select
                     value={qFormCorrect}
                     onChange={(e) => setQFormCorrect(e.target.value)}
-                    className="w-full p-2 bg-slate-950 border border-slate-800 rounded-xl text-white font-mono font-bold"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-mono font-bold"
                   >
                     <option value="A">A</option>
                     <option value="B">B</option>
@@ -3097,7 +3440,7 @@ export const AdminDashboard: React.FC = () => {
                     min={1}
                     value={qFormMarks}
                     onChange={(e) => setQFormMarks(parseInt(e.target.value, 10) || 1)}
-                    className="w-full p-2 bg-slate-950 border border-slate-800 rounded-xl text-white"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white"
                   />
                 </div>
                 <div>
@@ -3105,7 +3448,7 @@ export const AdminDashboard: React.FC = () => {
                   <select
                     value={qFormDifficulty}
                     onChange={(e) => setQFormDifficulty(e.target.value)}
-                    className="w-full p-2 bg-slate-950 border border-slate-800 rounded-xl text-white"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white"
                   >
                     <option value="Easy">Easy</option>
                     <option value="Medium">Medium</option>
@@ -3118,7 +3461,7 @@ export const AdminDashboard: React.FC = () => {
                     type="text"
                     value={qFormTopic}
                     onChange={(e) => setQFormTopic(e.target.value)}
-                    className="w-full p-2 bg-slate-950 border border-slate-800 rounded-xl text-white"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white"
                   />
                 </div>
               </div>
@@ -3133,7 +3476,7 @@ export const AdminDashboard: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 py-2.5 bg-sky-600 hover:bg-sky-500 text-white rounded-xl font-bold"
+                  className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold"
                 >
                   {editingQuestion ? 'Update Question' : 'Save Question'}
                 </button>
@@ -3147,14 +3490,14 @@ export const AdminDashboard: React.FC = () => {
       {/* MODAL 8: DELETE SUBJECT CONFIRMATION                      */}
       {/* ========================================================= */}
       {deletingSubject && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl">
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl">
             <div className="flex items-center space-x-3 text-rose-400">
               <AlertTriangle className="w-6 h-6" />
-              <h4 className="text-base font-bold text-white">Delete Subject</h4>
+              <h4 className="text-base font-bold text-slate-900">Delete Subject</h4>
             </div>
             <p className="text-xs text-slate-300 leading-relaxed">
-              Are you sure you want to permanently delete subject <span className="font-bold text-white">'{deletingSubject.name}'</span>?
+              Are you sure you want to permanently delete subject <span className="font-bold text-slate-900">'{deletingSubject.name}'</span>?
               If this subject is referenced by existing questions or exams, the deletion will be blocked and deactivation recommended to preserve academic history.
             </p>
             <div className="flex items-center space-x-3 pt-2">
@@ -3179,11 +3522,11 @@ export const AdminDashboard: React.FC = () => {
       {/* MODAL 9: DELETE QUESTION CONFIRMATION                     */}
       {/* ========================================================= */}
       {deletingQuestion && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl">
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl">
             <div className="flex items-center space-x-3 text-rose-400">
               <AlertTriangle className="w-6 h-6" />
-              <h4 className="text-base font-bold text-white">Delete Question #{deletingQuestion.id}</h4>
+              <h4 className="text-base font-bold text-slate-900">Delete Question #{deletingQuestion.id}</h4>
             </div>
             <p className="text-xs text-slate-300 leading-relaxed">
               Are you sure you want to permanently delete this question? If it has historical assessment records, please deactivate it instead.
@@ -3210,14 +3553,14 @@ export const AdminDashboard: React.FC = () => {
       {/* MODAL 10: DELETE ATTEMPT CONFIRMATION                     */}
       {/* ========================================================= */}
       {deletingAttempt && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl">
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl">
             <div className="flex items-center space-x-3 text-rose-400">
               <AlertTriangle className="w-6 h-6" />
-              <h4 className="text-base font-bold text-white">Delete Assessment Attempt</h4>
+              <h4 className="text-base font-bold text-slate-900">Delete Assessment Attempt</h4>
             </div>
             <p className="text-xs text-slate-300 leading-relaxed">
-              Are you sure you want to permanently delete assessment attempt <span className="font-mono text-sky-400 font-bold">#{deletingAttempt.attempt_id}</span> for student <span className="font-bold text-white">{deletingAttempt.name}</span>?
+              Are you sure you want to permanently delete assessment attempt <span className="font-mono text-blue-600 font-bold">#{deletingAttempt.attempt_id}</span> for student <span className="font-bold text-slate-900">{deletingAttempt.name}</span>?
               This will remove score records and answer logs while preserving the student account and examination.
             </p>
             <div className="flex items-center space-x-3 pt-2">
@@ -3242,11 +3585,11 @@ export const AdminDashboard: React.FC = () => {
       {/* MODAL 11: INSPECT ATTEMPT DETAILS WITH SECURITY LOGS      */}
       {/* ========================================================= */}
       {inspectingAttempt && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-3xl w-full p-6 space-y-5 shadow-2xl flex flex-col max-h-[85vh]">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-3xl w-full p-6 space-y-5 shadow-2xl flex flex-col max-h-[85vh]">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200">
               <div>
-                <h4 className="text-base font-bold text-white">
+                <h4 className="text-base font-bold text-slate-900">
                   Assessment Inspection: {inspectingAttempt.student?.name} ({inspectingAttempt.student?.enrollment_no})
                 </h4>
                 <p className="text-xs text-slate-400">
@@ -3259,25 +3602,25 @@ export const AdminDashboard: React.FC = () => {
             </div>
 
             {/* Anti-Cheating Security Summary */}
-            <div className="bg-slate-950 border border-slate-800 rounded-2xl p-4 space-y-2">
-              <h5 className="text-xs font-bold text-white flex items-center space-x-1.5">
+            <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-2">
+              <h5 className="text-xs font-bold text-slate-900 flex items-center space-x-1.5">
                 <ShieldAlert className="w-4 h-4 text-amber-400" />
                 <span>Cheating Reduction & Audit Trail</span>
               </h5>
               <div className="grid grid-cols-4 gap-2 text-xs">
-                <div className="bg-slate-900 p-2.5 rounded-xl border border-slate-800">
+                <div className="bg-slate-900 p-2.5 rounded-xl border border-slate-200">
                   <span className="text-[11px] text-slate-400 block">Tab Switches</span>
                   <span className="text-sm font-bold text-amber-400">{inspectingAttempt.attempt?.tab_switch_count || 0}</span>
                 </div>
-                <div className="bg-slate-900 p-2.5 rounded-xl border border-slate-800">
+                <div className="bg-slate-900 p-2.5 rounded-xl border border-slate-200">
                   <span className="text-[11px] text-slate-400 block">Fullscreen Exits</span>
                   <span className="text-sm font-bold text-amber-400">{inspectingAttempt.attempt?.fullscreen_exit_count || 0}</span>
                 </div>
-                <div className="bg-slate-900 p-2.5 rounded-xl border border-slate-800">
+                <div className="bg-slate-900 p-2.5 rounded-xl border border-slate-200">
                   <span className="text-[11px] text-slate-400 block">Copy Attempts</span>
                   <span className="text-sm font-bold text-rose-400">{inspectingAttempt.attempt?.copy_count || 0}</span>
                 </div>
-                <div className="bg-slate-900 p-2.5 rounded-xl border border-slate-800">
+                <div className="bg-slate-900 p-2.5 rounded-xl border border-slate-200">
                   <span className="text-[11px] text-slate-400 block">Paste Attempts</span>
                   <span className="text-sm font-bold text-rose-400">{inspectingAttempt.attempt?.paste_count || 0}</span>
                 </div>
@@ -3289,12 +3632,11 @@ export const AdminDashboard: React.FC = () => {
               <h5 className="font-bold text-slate-300">Question-Wise Response Audit:</h5>
               {inspectingAttempt.answers && inspectingAttempt.answers.length > 0 ? (
                 inspectingAttempt.answers.map((ans: any, idx: number) => (
-                  <div key={idx} className="bg-slate-950 border border-slate-800/80 rounded-xl p-3.5 space-y-1.5">
+                  <div key={idx} className="bg-slate-50 border border-slate-200/80 rounded-xl p-3.5 space-y-1.5">
                     <div className="flex items-center justify-between">
-                      <span className="font-bold text-sky-400 font-mono">Q{ans.question_number || idx + 1}</span>
-                      <span className={`px-2 py-0.5 rounded font-bold text-[10px] ${
-                        ans.is_correct ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'
-                      }`}>
+                      <span className="font-bold text-blue-600 font-mono">Q{ans.question_number || idx + 1}</span>
+                      <span className={`px-2 py-0.5 rounded font-bold text-[10px] ${ans.is_correct ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'
+                        }`}>
                         {ans.is_correct ? 'Correct (+1)' : 'Incorrect (0)'}
                       </span>
                     </div>
@@ -3314,7 +3656,7 @@ export const AdminDashboard: React.FC = () => {
               )}
             </div>
 
-            <div className="pt-2 border-t border-slate-800 text-right">
+            <div className="pt-2 border-t border-slate-200 text-right">
               <button
                 type="button"
                 onClick={() => setInspectingAttempt(null)}
@@ -3322,67 +3664,6 @@ export const AdminDashboard: React.FC = () => {
               >
                 Close Inspection
               </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* MODAL 7: CLEAR ALL DATA (DANGER ZONE) */}
-      {showClearDataModal && (
-        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-rose-900/60 rounded-3xl max-w-lg w-full p-6 space-y-4 shadow-2xl">
-            <div className="flex items-center justify-between pb-3 border-b border-rose-900/30">
-              <h4 className="text-base font-bold text-rose-400 flex items-center space-x-2">
-                <AlertTriangle className="w-5 h-5 text-rose-400" />
-                <span>Clear All Application Data</span>
-              </h4>
-              <button
-                disabled={clearDataLoading}
-                onClick={() => setShowClearDataModal(false)}
-                className="text-slate-400 hover:text-white"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="space-y-3 text-xs">
-              <div className="p-3.5 bg-rose-950/40 border border-rose-800/50 rounded-2xl text-rose-300 space-y-1.5">
-                <p className="font-bold text-rose-200">WARNING: THIS ACTION CANNOT BE UNDONE</p>
-                <p className="text-[11px] leading-relaxed">
-                  This will permanently delete all application data from the database. All departments, subjects, students, questions, examinations, and student test records will be erased.
-                </p>
-              </div>
-
-              <div className="space-y-1">
-                <p className="text-slate-400">To confirm, please type <strong className="text-white font-mono">DELETE ALL DATA</strong> below:</p>
-                <input
-                  type="text"
-                  autoFocus
-                  value={clearDataPhrase}
-                  onChange={(e) => setClearDataPhrase(e.target.value)}
-                  placeholder="DELETE ALL DATA"
-                  className="w-full p-2.5 bg-slate-950 border border-rose-900/60 rounded-xl text-white font-mono text-xs focus:outline-none focus:border-rose-500"
-                />
-              </div>
-
-              <div className="flex items-center space-x-3 pt-3">
-                <button
-                  type="button"
-                  disabled={clearDataLoading}
-                  onClick={() => setShowClearDataModal(false)}
-                  className="flex-1 py-2.5 bg-slate-800 text-slate-300 rounded-xl font-semibold"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  disabled={clearDataPhrase.trim() !== 'DELETE ALL DATA' || clearDataLoading}
-                  onClick={handleClearAllData}
-                  className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl font-bold transition-colors"
-                >
-                  {clearDataLoading ? 'Purging all data...' : 'PERMANENTLY DELETE ALL DATA'}
-                </button>
-              </div>
             </div>
           </div>
         </div>

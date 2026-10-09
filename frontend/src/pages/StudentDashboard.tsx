@@ -4,7 +4,6 @@ import {
   BookOpen,
   CreditCard,
   Building,
-  GraduationCap,
   Clock,
   Play,
   AlertCircle,
@@ -14,6 +13,7 @@ import {
   RefreshCw
 } from 'lucide-react';
 import api from '../services/api';
+import { CollegeBranding } from '../components/CollegeBranding';
 import type { Student, StudentAvailableExam } from '../types';
 
 export const StudentDashboard: React.FC = () => {
@@ -84,39 +84,39 @@ export const StudentDashboard: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-white space-y-4">
-        <div className="w-12 h-12 border-4 border-sky-500 border-t-transparent rounded-full animate-spin"></div>
-        <p className="text-slate-400 font-medium">Loading Student Examination Dashboard...</p>
+      <div className="min-h-screen bg-[#F5F8FC] flex flex-col items-center justify-center text-slate-800 space-y-4">
+        <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+        <p className="text-slate-600 font-medium">Loading Student Examination Dashboard...</p>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
-      {/* Top Navbar */}
-      <header className="bg-slate-900/80 backdrop-blur-md border-b border-slate-800 sticky top-0 z-50 px-6 py-4">
-        <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <div className="p-2.5 bg-sky-500/10 text-sky-400 rounded-xl border border-sky-500/20">
-              <GraduationCap className="w-6 h-6" />
-            </div>
-            <div>
-              <h1 className="text-lg font-bold text-white tracking-tight">College Examination Portal</h1>
-              <p className="text-xs text-slate-400">Student Examination & Assessment Desk</p>
+    <div className="min-h-screen bg-[#F5F8FC] text-slate-800 flex flex-col">
+      {/* Top Navbar — Official College Branding */}
+      <header className="bg-white border-b border-slate-200 sticky top-0 z-50 px-4 py-3 shadow-xs">
+        <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
+          {/* College Branding */}
+          <div className="flex items-center gap-3 min-w-0 flex-1">
+            <CollegeBranding size="sm" />
+            <div className="hidden sm:block w-px h-10 bg-slate-200 flex-shrink-0" />
+            <div className="hidden sm:block flex-shrink-0">
+              <h1 className="text-sm font-bold text-slate-900">Online Examination Portal</h1>
+              <p className="text-[11px] text-slate-500">Student Examination &amp; Assessment Desk</p>
             </div>
           </div>
-
-          <div className="flex items-center space-x-4">
+          {/* Controls */}
+          <div className="flex items-center space-x-3 flex-shrink-0">
             <button
               onClick={fetchDashboardData}
-              className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors"
+              className="p-2 text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
               title="Refresh"
             >
               <RefreshCw className="w-4 h-4" />
             </button>
             <button
               onClick={handleLogout}
-              className="flex items-center space-x-2 px-3 py-1.5 bg-slate-800 hover:bg-rose-500/20 hover:text-rose-400 text-slate-300 rounded-xl text-sm font-medium transition-colors"
+              className="flex items-center space-x-2 px-3 py-1.5 bg-slate-100 hover:bg-rose-50 hover:text-rose-600 text-slate-700 border border-slate-200 rounded-xl text-xs font-semibold transition-colors cursor-pointer"
             >
               <LogOut className="w-4 h-4" />
               <span>Logout</span>
@@ -129,40 +129,39 @@ export const StudentDashboard: React.FC = () => {
       <main className="flex-1 max-w-7xl w-full mx-auto p-6 md:p-8 space-y-8">
         {/* Student Profile Card */}
         {student && (
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl relative overflow-hidden">
-            <div className="absolute top-0 right-0 w-96 h-96 bg-sky-500/5 rounded-full blur-3xl pointer-events-none" />
+          <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm relative overflow-hidden">
             <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
               <div className="space-y-2">
-                <div className="inline-flex items-center space-x-2 px-3 py-1 bg-sky-500/10 border border-sky-500/20 rounded-full text-xs font-semibold text-sky-400">
+                <div className="inline-flex items-center space-x-2 px-3 py-1 bg-blue-50 border border-blue-200 rounded-full text-xs font-semibold text-blue-700">
                   <span>Enrolled Student</span>
                 </div>
-                <h2 className="text-2xl md:text-3xl font-black text-white">{student.name}</h2>
-                <div className="flex flex-wrap items-center gap-y-2 gap-x-4 text-sm text-slate-400">
+                <h2 className="text-2xl md:text-3xl font-extrabold text-slate-900">{student.name}</h2>
+                <div className="flex flex-wrap items-center gap-y-2 gap-x-4 text-sm text-slate-600">
                   <span className="flex items-center space-x-1.5">
-                    <CreditCard className="w-4 h-4 text-sky-400" />
-                    <span className="text-slate-200 font-mono font-medium">{student.enrollment_no}</span>
+                    <CreditCard className="w-4 h-4 text-blue-600" />
+                    <span className="text-slate-900 font-mono font-semibold">{student.enrollment_no}</span>
                   </span>
                   <span>•</span>
                   <span className="flex items-center space-x-1.5">
-                    <Building className="w-4 h-4 text-sky-400" />
-                    <span>{student.department}</span>
+                    <Building className="w-4 h-4 text-blue-600" />
+                    <span className="font-medium text-slate-800">{student.department}</span>
                   </span>
                 </div>
               </div>
 
               {/* Academic Tags */}
               <div className="grid grid-cols-3 gap-3">
-                <div className="bg-slate-950/80 border border-slate-800/80 rounded-xl px-4 py-2.5 text-center">
+                <div className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-center">
                   <span className="text-[10px] text-slate-500 uppercase tracking-wider block font-bold">Program</span>
-                  <span className="text-sm font-bold text-white">{student.program || 'UG'}</span>
+                  <span className="text-sm font-bold text-slate-900">{student.program || 'UG'}</span>
                 </div>
-                <div className="bg-slate-950/80 border border-slate-800/80 rounded-xl px-4 py-2.5 text-center">
+                <div className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-center">
                   <span className="text-[10px] text-slate-500 uppercase tracking-wider block font-bold">Academic Year</span>
-                  <span className="text-sm font-bold text-white">{student.year || '1st Year'}</span>
+                  <span className="text-sm font-bold text-slate-900">{student.year || '1st Year'}</span>
                 </div>
-                <div className="bg-slate-950/80 border border-slate-800/80 rounded-xl px-4 py-2.5 text-center">
+                <div className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-center">
                   <span className="text-[10px] text-slate-500 uppercase tracking-wider block font-bold">Semester</span>
-                  <span className="text-sm font-bold text-white">{student.semester || 'Semester 1'}</span>
+                  <span className="text-sm font-bold text-slate-900">{student.semester || 'Semester 1'}</span>
                 </div>
               </div>
             </div>
@@ -171,11 +170,11 @@ export const StudentDashboard: React.FC = () => {
 
         {/* Global Error Banner */}
         {error && (
-          <div className="p-4 bg-rose-500/10 border border-rose-500/30 rounded-2xl flex items-start space-x-3 text-rose-400">
-            <AlertCircle className="w-5 h-5 flex-shrink-0 mt-0.5" />
+          <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl flex items-start space-x-3 text-rose-700">
+            <AlertCircle className="w-5 h-5 flex-shrink-0 mt-0.5 text-rose-600" />
             <div className="space-y-1">
               <span className="font-semibold block">Access Restricted</span>
-              <p className="text-sm text-rose-300/90">{error}</p>
+              <p className="text-sm text-rose-600">{error}</p>
             </div>
           </div>
         )}
@@ -184,26 +183,26 @@ export const StudentDashboard: React.FC = () => {
         <section className="space-y-4">
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="text-xl font-bold text-white flex items-center space-x-2">
-                <BookOpen className="w-5 h-5 text-sky-400" />
+              <h3 className="text-xl font-bold text-slate-900 flex items-center space-x-2">
+                <BookOpen className="w-5 h-5 text-blue-600" />
                 <span>Assigned Examinations</span>
               </h3>
-              <p className="text-xs text-slate-400">
+              <p className="text-xs text-slate-500">
                 Only exams specifically authorized and assigned to your enrollment account appear below.
               </p>
             </div>
-            <span className="text-xs px-2.5 py-1 bg-slate-800 border border-slate-700 rounded-lg text-slate-300 font-medium">
+            <span className="text-xs px-2.5 py-1 bg-white border border-slate-200 rounded-lg text-slate-700 font-semibold shadow-xs">
               {exams.length} Assigned Exam{exams.length === 1 ? '' : 's'}
             </span>
           </div>
 
           {exams.length === 0 ? (
-            <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-12 text-center space-y-3">
-              <div className="w-12 h-12 bg-slate-800 rounded-full flex items-center justify-center mx-auto text-slate-500">
+            <div className="bg-white border border-slate-200 rounded-2xl p-12 text-center space-y-3 shadow-xs">
+              <div className="w-12 h-12 bg-slate-100 rounded-full flex items-center justify-center mx-auto text-slate-400">
                 <BookOpen className="w-6 h-6" />
               </div>
-              <h4 className="text-base font-semibold text-white">No Examinations Assigned Yet</h4>
-              <p className="text-sm text-slate-400 max-w-md mx-auto">
+              <h4 className="text-base font-semibold text-slate-900">No Examinations Assigned Yet</h4>
+              <p className="text-sm text-slate-500 max-w-md mx-auto">
                 Your department has not assigned any active examinations to your account at this time. Please check back later or consult your exam coordinator.
               </p>
             </div>
@@ -216,16 +215,16 @@ export const StudentDashboard: React.FC = () => {
                 return (
                   <div
                     key={exam.id}
-                    className="bg-slate-900 border border-slate-800 hover:border-slate-700/80 transition-all rounded-2xl p-5 flex flex-col justify-between space-y-5 shadow-lg relative group"
+                    className="bg-white border border-slate-200 hover:border-blue-300 transition-all rounded-2xl p-5 flex flex-col justify-between space-y-5 shadow-xs relative group"
                   >
                     <div className="space-y-3">
                       <div className="flex items-start justify-between gap-2">
                         <span className={`text-[11px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full border ${
                           isCompleted
-                            ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
                             : isInProgress
-                            ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
-                            : 'bg-sky-500/10 text-sky-400 border-sky-500/20'
+                            ? 'bg-amber-50 text-amber-700 border-amber-200'
+                            : 'bg-blue-50 text-blue-700 border-blue-200'
                         }`}>
                           {exam.status.replace('_', ' ')}
                         </span>
@@ -235,29 +234,29 @@ export const StudentDashboard: React.FC = () => {
                       </div>
 
                       <div>
-                        <h4 className="text-lg font-bold text-white group-hover:text-sky-300 transition-colors">
+                        <h4 className="text-lg font-bold text-slate-900 group-hover:text-blue-600 transition-colors">
                           {exam.title}
                         </h4>
-                        <p className="text-xs text-slate-400 mt-0.5">
-                          Subject: <span className="text-slate-200 font-medium">{exam.subject_name || 'General'}</span>
+                        <p className="text-xs text-slate-500 mt-0.5">
+                          Subject: <span className="text-slate-800 font-medium">{exam.subject_name || 'General'}</span>
                         </p>
                       </div>
 
-                      <div className="grid grid-cols-2 gap-2 text-xs text-slate-400 pt-2 border-t border-slate-800/80">
+                      <div className="grid grid-cols-2 gap-2 text-xs text-slate-600 pt-2 border-t border-slate-100">
                         <div className="flex items-center space-x-1.5">
-                          <Clock className="w-3.5 h-3.5 text-slate-500" />
+                          <Clock className="w-3.5 h-3.5 text-slate-400" />
                           <span>{exam.duration_minutes} Mins</span>
                         </div>
                         <div className="flex items-center space-x-1.5">
-                          <BookOpen className="w-3.5 h-3.5 text-slate-500" />
+                          <BookOpen className="w-3.5 h-3.5 text-slate-400" />
                           <span>{exam.total_questions} Questions</span>
                         </div>
                         <div className="flex items-center space-x-1.5">
-                          <Trophy className="w-3.5 h-3.5 text-slate-500" />
+                          <Trophy className="w-3.5 h-3.5 text-slate-400" />
                           <span>{exam.total_marks} Total Marks</span>
                         </div>
                         <div className="flex items-center space-x-1.5">
-                          <Building className="w-3.5 h-3.5 text-slate-500" />
+                          <Building className="w-3.5 h-3.5 text-slate-400" />
                           <span className="truncate">{exam.department_name || 'All Depts'}</span>
                         </div>
                       </div>
@@ -267,10 +266,10 @@ export const StudentDashboard: React.FC = () => {
                     <div className="pt-2">
                       {isCompleted ? (
                         <div className="space-y-3">
-                          <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-3 flex items-center justify-between">
-                            <span className="text-xs text-slate-400 font-medium">Final Score</span>
+                          <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 flex items-center justify-between">
+                            <span className="text-xs text-slate-600 font-medium">Final Score</span>
                             <div className="text-right">
-                              <span className="text-sm font-bold text-emerald-400">
+                              <span className="text-sm font-bold text-emerald-600">
                                 {exam.score} / {exam.total_questions}
                               </span>
                               <span className="text-[11px] text-slate-500 block">({exam.percentage}%)</span>
@@ -279,7 +278,7 @@ export const StudentDashboard: React.FC = () => {
                           {exam.attempt_id && (
                             <button
                               onClick={() => navigate(`/result/${exam.attempt_id}`)}
-                              className="w-full py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold rounded-xl text-xs flex items-center justify-center space-x-1.5 transition-colors"
+                              className="w-full py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-xl text-xs flex items-center justify-center space-x-1.5 transition-colors cursor-pointer border border-slate-200"
                             >
                               <span>View Scorecard</span>
                               <ArrowRight className="w-3.5 h-3.5" />
@@ -290,7 +289,7 @@ export const StudentDashboard: React.FC = () => {
                         <button
                           onClick={() => handleStartExam(exam.id)}
                           disabled={startingExamId === exam.id}
-                          className="w-full py-3 px-4 bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white font-bold rounded-xl shadow-lg shadow-sky-500/20 flex items-center justify-center space-x-2 transition-all disabled:opacity-50 text-sm"
+                          className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-sm flex items-center justify-center space-x-2 transition-all disabled:opacity-50 text-sm cursor-pointer"
                         >
                           {startingExamId === exam.id ? (
                             <span>Preparing Exam...</span>
@@ -311,19 +310,19 @@ export const StudentDashboard: React.FC = () => {
         </section>
 
         {/* Existing General DSA MCQ Practice Card for Backward Compatibility */}
-        <section className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-6 flex flex-col md:flex-row items-center justify-between gap-4">
+        <section className="bg-white border border-slate-200 rounded-2xl p-6 flex flex-col md:flex-row items-center justify-between gap-4 shadow-xs">
           <div className="space-y-1">
-            <h4 className="text-base font-bold text-white flex items-center space-x-2">
-              <span className="text-xs px-2 py-0.5 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded font-semibold uppercase">Legacy Assessment</span>
+            <h4 className="text-base font-bold text-slate-900 flex items-center space-x-2">
+              <span className="text-xs px-2 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 rounded font-semibold uppercase">Legacy Assessment</span>
               <span>DSA 50-Question Practice Test</span>
             </h4>
-            <p className="text-xs text-slate-400">
-              Take the standard Data Structures & Algorithms 50-question general assessment test.
+            <p className="text-xs text-slate-500">
+              Take the standard Data Structures &amp; Algorithms 50-question general assessment test.
             </p>
           </div>
           <button
             onClick={() => navigate('/')}
-            className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold whitespace-nowrap transition-colors"
+            className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 rounded-xl text-xs font-semibold whitespace-nowrap transition-colors cursor-pointer"
           >
             Launch Practice Test
           </button>

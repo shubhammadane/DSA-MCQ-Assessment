@@ -25,21 +25,10 @@ class Settings(BaseSettings):
     @property
     def sqlalchemy_database_url(self) -> str:
         url = self.DATABASE_URL
-        # If postgresql is specified without driver, determine best driver
-        use_pg8000 = True
-        try:
-            import psycopg2
-            use_pg8000 = False
-        except (ImportError, Exception):
-            use_pg8000 = True
-
-        driver = "postgresql+pg8000://" if use_pg8000 else "postgresql+psycopg2://"
         if url.startswith("postgres://"):
-            url = url.replace("postgres://", driver, 1)
+            url = url.replace("postgres://", "postgresql+psycopg2://", 1)
         elif url.startswith("postgresql://") and not url.startswith("postgresql+"):
-            url = url.replace("postgresql://", driver, 1)
-        elif use_pg8000 and url.startswith("postgresql+psycopg2://"):
-            url = url.replace("postgresql+psycopg2://", "postgresql+pg8000://", 1)
+            url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
         return url
 
     class Config:

@@ -50,7 +50,7 @@ def test_03_academic_structure_and_departments():
 
     # Test Add Department
     dept_res = client.post("/api/departments", headers=admin_headers, json={"name": "Aerospace Engineering", "code": "AERO"})
-    assert dept_res.status_code in [201, 400, 409]  # 201 or already exists (409 Conflict)
+    assert dept_res.status_code in [201, 400]  # 201 or already exists
 
 
 def test_04_manual_subject_management():
@@ -447,3 +447,45 @@ def test_11_regression_existing_dsa_flow():
     curr_settings = set_res.json()
     assert "question_count" in curr_settings
     assert "time_limit_minutes" in curr_settings
+
+    set_res = client.get("/api/admin/assessment-settings", headers=admin_headers)
+    assert set_res.status_code == 200
+    curr_settings = set_res.json()
+    assert "question_count" in curr_settings
+    assert "time_limit_minutes" in curr_settings
+
+
+def test_12_department_statistics_and_data_preservation():
+    # 1. Verify departments statistics endpoint
+    stats_res = client.get("/api/departments/stats")
+    assert stats_res.status_code == 200
+    dept_stats = stats_res.json()
+    assert isinstance(dept_stats, list)
+    assert len(dept_stats) > 0
+
+    for d in dept_stats:
+        assert "id" in d
+        assert "name" in d
+        assert "is_active" in d
+        assert "students_count" in d
+        assert "active_subjects_count" in d
+        assert "exams_count" in d
+        assert "active_exams_count" in d
+        assert isinstance(d["students_count"], int)
+        assert isinstance(d["active_subjects_count"], int)
+        assert isinstance(d["exams_count"], int)
+        assert isinstance(d["active_exams_count"], int)
+
+    # 2. Verify admin dashboard counts
+    login_res = client.post("/api/auth/login", json={"username": settings.ADMIN_USERNAME, "password": settings.ADMIN_PASSWORD})
+    admin_token = login_res.json()["access_token"]
+    admin_headers = {"Authorization": f"Bearer {admin_token}"}
+
+    dash_res = client.get("/api/admin/dashboard", headers=admin_headers)
+    assert dash_res.status_code == 200
+    dash_data = dash_res.json()
+    assert dash_data["total_students"] > 0
+    assert dash_data["total_questions"] >= 50
+    assert dash_data["total_departments"] > 0
+    assert dash_data["total_subjects"] >= 1
+    assert dash_data["total_exams"] >= 1

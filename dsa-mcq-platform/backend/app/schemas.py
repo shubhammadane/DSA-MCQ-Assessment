@@ -21,6 +21,20 @@ class DepartmentOut(BaseModel):
         from_attributes = True
 
 
+class DepartmentStats(BaseModel):
+    id: int
+    name: str
+    code: Optional[str] = None
+    is_active: bool = True
+    students_count: int = 0
+    active_subjects_count: int = 0
+    exams_count: int = 0
+    active_exams_count: int = 0
+
+    class Config:
+        from_attributes = True
+
+
 # ==========================================
 # 2. Academic Structure Schemas
 # ==========================================
@@ -445,9 +459,39 @@ class AdminLogin(BaseModel):
     username: str
     password: str
 
+class AdminUserCreate(BaseModel):
+    username: str
+    password: str
+    full_name: str
+    email: Optional[str] = None
+    role: str = "hod"  # "super_admin", "hod", "faculty"
+    department_id: Optional[int] = None
+
+class AdminUserUpdate(BaseModel):
+    full_name: Optional[str] = None
+    email: Optional[str] = None
+    password: Optional[str] = None
+    department_id: Optional[int] = None
+    is_active: Optional[bool] = None
+
+class AdminUserOut(BaseModel):
+    id: int
+    username: str
+    full_name: str
+    email: Optional[str] = None
+    role: str
+    department_id: Optional[int] = None
+    department_name: Optional[str] = None
+    is_active: bool
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
 class Token(BaseModel):
     access_token: str
     token_type: str
+    user: Optional[AdminUserOut] = None
 
 class AdminDashboardStats(BaseModel):
     total_students: int

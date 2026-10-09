@@ -17,9 +17,13 @@ from app.config import settings
 from app.auth import (
     create_access_token,
     get_current_admin,
+    require_super_admin,
+    require_hod_or_super_admin,
     get_current_student,
     hash_password,
-    verify_password
+    verify_password,
+    CurrentUser,
+    get_optional_admin
 )
 from app.questions_data import FIXED_QUESTIONS, QUESTIONS_BY_ID
 
@@ -58,18 +62,212 @@ def calculate_attempt_score(attempt: models.Attempt, db: Session):
 
 
 # =========================================================================
-# 1. ADMIN AUTHENTICATION
+# 1. ADMIN & HOD AUTHENTICATION
 # =========================================================================
 
 @router.post("/auth/login", response_model=schemas.Token)
-def login(credentials: schemas.AdminLogin):
+def login(credentials: schemas.AdminLogin, db: Session = Depends(get_db)):
+    # 1. Super Admin from environment configuration
     if credentials.username == settings.ADMIN_USERNAME and credentials.password == settings.ADMIN_PASSWORD:
-        access_token = create_access_token(data={"sub": credentials.username, "role": "admin"})
-        return {"access_token": access_token, "token_type": "bearer"}
+        access_token = create_access_token(data={"sub": credentials.username, "role": "super_admin"})
+        user_out = schemas.AdminUserOut(
+            id=0,
+            username=credentials.username,
+            full_name="Super Administrator",
+            email=None,
+            role="super_admin",
+            department_id=None,
+            department_name=None,
+            is_active=True,
+            created_at=datetime.utcnow()
+        )
+        return {"access_token": access_token, "token_type": "bearer", "user": user_out}
+
+    # 2. Database AdminUser (HOD / Faculty / Super Admin)
+    user = db.query(models.AdminUser).filter(
+        models.AdminUser.username == credentials.username.strip(),
+        models.AdminUser.is_active == True
+    ).first()
+
+    if user and verify_password(credentials.password, user.hashed_password):
+        access_token = create_access_token(data={
+            "sub": user.username,
+            "role": user.role,
+            "user_id": user.id,
+            "department_id": user.department_id
+        })
+        dept_name = user.department.name if user.department else None
+        user_out = schemas.AdminUserOut(
+            id=user.id,
+            username=user.username,
+            full_name=user.full_name,
+            email=user.email,
+            role=user.role,
+            department_id=user.department_id,
+            department_name=dept_name,
+            is_active=user.is_active,
+            created_at=user.created_at
+        )
+        return {"access_token": access_token, "token_type": "bearer", "user": user_out}
+
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Incorrect admin username or password"
+        detail="Incorrect username or password"
     )
+
+
+@router.get("/auth/me", response_model=schemas.AdminUserOut)
+def get_current_user_profile(admin: CurrentUser = Depends(get_current_admin)):
+    return schemas.AdminUserOut(
+        id=admin.id or 0,
+        username=admin.username,
+        full_name=admin.full_name,
+        email=None,
+        role=admin.role,
+        department_id=admin.department_id,
+        department_name=admin.department_name,
+        is_active=True,
+        created_at=datetime.utcnow()
+    )
+
+
+# =========================================================================
+# 1.1 HOD & STAFF ACCOUNT MANAGEMENT (SUPER ADMIN ONLY)
+# =========================================================================
+
+@router.get("/admin/users", response_model=List[schemas.AdminUserOut])
+def get_admin_users(
+    admin: CurrentUser = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+):
+    users = db.query(models.AdminUser).order_by(models.AdminUser.id.asc()).all()
+    result = []
+    for u in users:
+        dept_name = u.department.name if u.department else None
+        result.append(schemas.AdminUserOut(
+            id=u.id,
+            username=u.username,
+            full_name=u.full_name,
+            email=u.email,
+            role=u.role,
+            department_id=u.department_id,
+            department_name=dept_name,
+            is_active=u.is_active,
+            created_at=u.created_at
+        ))
+    return result
+
+
+@router.post("/admin/users", response_model=schemas.AdminUserOut, status_code=201)
+def create_admin_user(
+    user_in: schemas.AdminUserCreate,
+    admin: CurrentUser = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+):
+    username = user_in.username.strip()
+    if not username:
+        raise HTTPException(status_code=400, detail="Username is required.")
+    
+    if username == settings.ADMIN_USERNAME:
+        raise HTTPException(status_code=400, detail="Cannot use system super-admin username.")
+
+    existing = db.query(models.AdminUser).filter(func.lower(models.AdminUser.username) == username.lower()).first()
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Username '{username}' already exists.")
+
+    dept = None
+    if user_in.role == "hod":
+        if not user_in.department_id:
+            raise HTTPException(status_code=400, detail="Department assignment is required for HOD role.")
+        dept = db.query(models.Department).filter(models.Department.id == user_in.department_id).first()
+        if not dept:
+            raise HTTPException(status_code=400, detail=f"Department with ID {user_in.department_id} does not exist.")
+
+    hashed = hash_password(user_in.password)
+    user = models.AdminUser(
+        username=username,
+        hashed_password=hashed,
+        full_name=user_in.full_name.strip(),
+        email=user_in.email.strip() if user_in.email else None,
+        role=user_in.role,
+        department_id=user_in.department_id,
+        is_active=True,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow()
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    return schemas.AdminUserOut(
+        id=user.id,
+        username=user.username,
+        full_name=user.full_name,
+        email=user.email,
+        role=user.role,
+        department_id=user.department_id,
+        department_name=dept.name if dept else None,
+        is_active=user.is_active,
+        created_at=user.created_at
+    )
+
+
+@router.put("/admin/users/{user_id}", response_model=schemas.AdminUserOut)
+def update_admin_user(
+    user_id: int,
+    user_in: schemas.AdminUserUpdate,
+    admin: CurrentUser = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+):
+    user = db.query(models.AdminUser).filter(models.AdminUser.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    if user_in.full_name is not None:
+        user.full_name = user_in.full_name.strip()
+    if user_in.email is not None:
+        user.email = user_in.email.strip() if user_in.email else None
+    if user_in.password:
+        user.hashed_password = hash_password(user_in.password)
+    if user_in.department_id is not None:
+        dept = db.query(models.Department).filter(models.Department.id == user_in.department_id).first()
+        if not dept:
+            raise HTTPException(status_code=400, detail="Invalid department ID.")
+        user.department_id = user_in.department_id
+    if user_in.is_active is not None:
+        user.is_active = user_in.is_active
+    user.updated_at = datetime.utcnow()
+
+    db.commit()
+    db.refresh(user)
+
+    dept_name = user.department.name if user.department else None
+    return schemas.AdminUserOut(
+        id=user.id,
+        username=user.username,
+        full_name=user.full_name,
+        email=user.email,
+        role=user.role,
+        department_id=user.department_id,
+        department_name=dept_name,
+        is_active=user.is_active,
+        created_at=user.created_at
+    )
+
+
+@router.delete("/admin/users/{user_id}")
+def delete_admin_user(
+    user_id: int,
+    admin: CurrentUser = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+):
+    user = db.query(models.AdminUser).filter(models.AdminUser.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    
+    user.is_active = False
+    db.commit()
+    return {"status": "success", "message": f"User '{user.username}' deactivated successfully."}
 
 
 # =========================================================================
@@ -99,13 +297,13 @@ def get_departments(all_status: bool = False, db: Session = Depends(get_db)):
 
 
 @router.post("/departments", response_model=schemas.DepartmentOut, status_code=status.HTTP_201_CREATED)
-def create_department(dept_in: schemas.DepartmentCreate, admin: str = Depends(get_current_admin), db: Session = Depends(get_db)):
+def create_department(dept_in: schemas.DepartmentCreate, admin: CurrentUser = Depends(require_super_admin), db: Session = Depends(get_db)):
     name = dept_in.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="Department Full Name is required.")
     existing = db.query(models.Department).filter(models.Department.name.ilike(name)).first()
     if existing:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Department '{name}' already exists.")
+        raise HTTPException(status_code=400, detail=f"Department '{name}' already exists.")
     dept = models.Department(
         name=name,
         code=dept_in.code.strip() if dept_in.code else None,
@@ -119,7 +317,7 @@ def create_department(dept_in: schemas.DepartmentCreate, admin: str = Depends(ge
 
 
 @router.patch("/departments/{department_id}/status", response_model=schemas.DepartmentOut)
-def toggle_department_status(department_id: int, status_in: schemas.QuestionStatusUpdate, admin: str = Depends(get_current_admin), db: Session = Depends(get_db)):
+def toggle_department_status(department_id: int, status_in: schemas.QuestionStatusUpdate, admin: CurrentUser = Depends(require_super_admin), db: Session = Depends(get_db)):
     dept = db.query(models.Department).filter(models.Department.id == department_id).first()
     if not dept:
         raise HTTPException(status_code=404, detail="Department not found.")
@@ -127,6 +325,70 @@ def toggle_department_status(department_id: int, status_in: schemas.QuestionStat
     db.commit()
     db.refresh(dept)
     return dept
+
+
+@router.get("/departments/stats", response_model=List[schemas.DepartmentStats])
+def get_departments_stats(db: Session = Depends(get_db)):
+    """Return each active department with real student, subject, and exam counts."""
+    depts = (
+        db.query(models.Department)
+        .filter(models.Department.is_active == True)
+        .order_by(models.Department.name.asc())
+        .all()
+    )
+
+    result = []
+    for dept in depts:
+        students_count = (
+            db.query(func.count(models.Student.id))
+            .filter(
+                or_(
+                    models.Student.department_id == dept.id,
+                    models.Student.department.ilike(dept.name)
+                ),
+                models.Student.is_active == True
+            )
+            .scalar() or 0
+        )
+        active_subjects_count = (
+            db.query(func.count(models.Subject.id))
+            .filter(models.Subject.department_id == dept.id, models.Subject.is_active == True)
+            .scalar() or 0
+        )
+        exams_count = (
+            db.query(func.count(models.Exam.id))
+            .filter(
+                or_(
+                    models.Exam.department_id == dept.id,
+                    models.Exam.department_name.ilike(dept.name)
+                ),
+                models.Exam.is_active == True
+            )
+            .scalar() or 0
+        )
+        active_exams_count = (
+            db.query(func.count(models.Exam.id))
+            .filter(
+                or_(
+                    models.Exam.department_id == dept.id,
+                    models.Exam.department_name.ilike(dept.name)
+                ),
+                models.Exam.is_active == True,
+                models.Exam.status == "published"
+            )
+            .scalar() or 0
+        )
+        result.append(schemas.DepartmentStats(
+            id=dept.id,
+            name=dept.name,
+            code=dept.code,
+            is_active=dept.is_active,
+            students_count=students_count,
+            active_subjects_count=active_subjects_count,
+            exams_count=exams_count,
+            active_exams_count=active_exams_count,
+        ))
+    return result
 
 
 # =========================================================================
@@ -141,10 +403,15 @@ def get_subjects(
     semester_id: Optional[int] = None,
     search: Optional[str] = None,
     is_active: Optional[bool] = None,
+    admin: Optional[CurrentUser] = Depends(get_optional_admin),
     db: Session = Depends(get_db)
 ):
     q = db.query(models.Subject)
-    if department_id:
+    if admin and admin.is_hod:
+        if department_id and department_id != admin.department_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Cannot query subjects from another department.")
+        q = q.filter(models.Subject.department_id == admin.department_id)
+    elif department_id:
         q = q.filter(models.Subject.department_id == department_id)
     if program_id:
         q = q.filter(models.Subject.program_id == program_id)
@@ -161,15 +428,22 @@ def get_subjects(
 
 
 @router.get("/subjects/{subject_id}", response_model=schemas.SubjectOut)
-def get_subject(subject_id: int, db: Session = Depends(get_db)):
+def get_subject(subject_id: int, admin: Optional[CurrentUser] = Depends(get_optional_admin), db: Session = Depends(get_db)):
     subj = db.query(models.Subject).filter(models.Subject.id == subject_id).first()
     if not subj:
         raise HTTPException(status_code=404, detail="Subject not found.")
+    if admin and admin.is_hod and subj.department_id != admin.department_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Subject does not belong to your department.")
     return subj
 
 
 @router.post("/subjects", response_model=schemas.SubjectOut, status_code=status.HTTP_201_CREATED)
-def create_subject(subj_in: schemas.SubjectCreate, admin: str = Depends(get_current_admin), db: Session = Depends(get_db)):
+def create_subject(subj_in: schemas.SubjectCreate, admin: CurrentUser = Depends(get_current_admin), db: Session = Depends(get_db)):
+    if admin.is_hod:
+        if subj_in.department_id and subj_in.department_id != admin.department_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Cannot create subjects for another department.")
+        subj_in.department_id = admin.department_id
+
     name = subj_in.name.strip()
     code = subj_in.code.strip()
     if not name or not code:
@@ -219,16 +493,22 @@ def create_subject(subj_in: schemas.SubjectCreate, admin: str = Depends(get_curr
 
 
 @router.put("/subjects/{subject_id}", response_model=schemas.SubjectOut)
-def update_subject(subject_id: int, subj_in: schemas.SubjectUpdate, admin: str = Depends(get_current_admin), db: Session = Depends(get_db)):
+def update_subject(subject_id: int, subj_in: schemas.SubjectUpdate, admin: CurrentUser = Depends(get_current_admin), db: Session = Depends(get_db)):
     subj = db.query(models.Subject).filter(models.Subject.id == subject_id).first()
     if not subj:
         raise HTTPException(status_code=404, detail="Subject not found.")
+
+    if admin.is_hod:
+        if subj.department_id != admin.department_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Subject does not belong to your department.")
+        if subj_in.department_id and subj_in.department_id != admin.department_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Cannot transfer subject to another department.")
 
     if subj_in.name is not None:
         subj.name = subj_in.name.strip()
     if subj_in.code is not None:
         subj.code = subj_in.code.strip()
-    if subj_in.department_id is not None:
+    if subj_in.department_id is not None and not admin.is_hod:
         dept = db.query(models.Department).filter(models.Department.id == subj_in.department_id).first()
         if dept:
             subj.department_id = dept.id
@@ -255,10 +535,12 @@ def update_subject(subject_id: int, subj_in: schemas.SubjectUpdate, admin: str =
 
 
 @router.patch("/subjects/{subject_id}/status", response_model=schemas.SubjectOut)
-def toggle_subject_status(subject_id: int, status_in: schemas.QuestionStatusUpdate, admin: str = Depends(get_current_admin), db: Session = Depends(get_db)):
+def toggle_subject_status(subject_id: int, status_in: schemas.QuestionStatusUpdate, admin: CurrentUser = Depends(get_current_admin), db: Session = Depends(get_db)):
     subj = db.query(models.Subject).filter(models.Subject.id == subject_id).first()
     if not subj:
         raise HTTPException(status_code=404, detail="Subject not found.")
+    if admin.is_hod and subj.department_id != admin.department_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Subject does not belong to your department.")
     subj.is_active = status_in.is_active
     subj.updated_at = datetime.utcnow()
     db.commit()
@@ -267,10 +549,12 @@ def toggle_subject_status(subject_id: int, status_in: schemas.QuestionStatusUpda
 
 
 @router.delete("/subjects/{subject_id}")
-def delete_subject(subject_id: int, admin: str = Depends(get_current_admin), db: Session = Depends(get_db)):
+def delete_subject(subject_id: int, admin: CurrentUser = Depends(get_current_admin), db: Session = Depends(get_db)):
     subj = db.query(models.Subject).filter(models.Subject.id == subject_id).first()
     if not subj:
         raise HTTPException(status_code=404, detail="Subject not found.")
+    if admin.is_hod and subj.department_id != admin.department_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Subject does not belong to your department.")
 
     # Safe delete check: verify if any questions or exams reference this subject
     q_count = db.query(models.Question).filter(models.Question.subject_id == subject_id).count()
@@ -299,11 +583,20 @@ def list_students(
     semester: Optional[str] = None,
     search: Optional[str] = None,
     is_active: Optional[bool] = None,
-    admin: str = Depends(get_current_admin),
+    admin: CurrentUser = Depends(get_current_admin),
     db: Session = Depends(get_db)
 ):
     q = db.query(models.Student)
-    if department:
+    if admin.is_hod:
+        if department and department != admin.department_name:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Cannot query students from another department.")
+        q = q.filter(
+            or_(
+                models.Student.department_id == admin.department_id,
+                models.Student.department.ilike(admin.department_name)
+            )
+        )
+    elif department:
         q = q.filter(models.Student.department == department)
     if program:
         q = q.filter(models.Student.program == program)
@@ -320,10 +613,22 @@ def list_students(
 
 
 @router.post("/admin/students", response_model=schemas.StudentOut, status_code=status.HTTP_201_CREATED)
-def admin_create_student(student_in: schemas.StudentCreate, admin: str = Depends(get_current_admin), db: Session = Depends(get_db)):
+def admin_create_student(student_in: schemas.StudentCreate, admin: CurrentUser = Depends(get_current_admin), db: Session = Depends(get_db)):
+    if admin.is_hod:
+        if student_in.department and admin.department_name:
+            norm_in = student_in.department.strip().lower().replace("and", "&")
+            norm_admin = admin.department_name.strip().lower().replace("and", "&")
+            if norm_in != norm_admin:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Cannot create student for another department.")
+        dept = admin.department_name
+        dept_id = admin.department_id
+    else:
+        dept = student_in.department.strip()
+        dept_obj = db.query(models.Department).filter(models.Department.name.ilike(dept)).first()
+        dept_id = dept_obj.id if dept_obj else None
+
     enrollment = student_in.enrollment_no.strip()
     name = student_in.name.strip()
-    dept = student_in.department.strip()
 
     if not enrollment or not name or not dept:
         raise HTTPException(status_code=400, detail="Enrollment No, Name, and Department are required.")
@@ -334,9 +639,6 @@ def admin_create_student(student_in: schemas.StudentCreate, admin: str = Depends
             status_code=status.HTTP_409_CONFLICT,
             detail="Student with this Enrollment Number already exists."
         )
-
-    dept_obj = db.query(models.Department).filter(models.Department.name.ilike(dept)).first()
-    dept_id = dept_obj.id if dept_obj else None
 
     raw_password = student_in.password.strip() if student_in.password else enrollment
     hashed_pwd = hash_password(raw_password)
@@ -361,15 +663,21 @@ def admin_create_student(student_in: schemas.StudentCreate, admin: str = Depends
 
 
 @router.put("/admin/students/{student_id}", response_model=schemas.StudentOut)
-def admin_update_student(student_id: int, student_in: schemas.StudentUpdate, admin: str = Depends(get_current_admin), db: Session = Depends(get_db)):
+def admin_update_student(student_id: int, student_in: schemas.StudentUpdate, admin: CurrentUser = Depends(get_current_admin), db: Session = Depends(get_db)):
     student = db.query(models.Student).filter(models.Student.id == student_id).first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found.")
 
+    if admin.is_hod:
+        if student.department_id != admin.department_id and student.department != admin.department_name:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Student does not belong to your department.")
+
     if student_in.name is not None:
         student.name = student_in.name.strip()
-    if student_in.department is not None:
+    if student_in.department is not None and not admin.is_hod:
         student.department = student_in.department.strip()
+        dept_obj = db.query(models.Department).filter(models.Department.name.ilike(student.department)).first()
+        student.department_id = dept_obj.id if dept_obj else student.department_id
     if student_in.gender is not None:
         student.gender = student_in.gender.strip()
     if student_in.program is not None:
@@ -390,10 +698,12 @@ def admin_update_student(student_id: int, student_in: schemas.StudentUpdate, adm
 
 
 @router.patch("/admin/students/{student_id}/status", response_model=schemas.StudentOut)
-def toggle_student_status(student_id: int, status_in: schemas.QuestionStatusUpdate, admin: str = Depends(get_current_admin), db: Session = Depends(get_db)):
+def toggle_student_status(student_id: int, status_in: schemas.QuestionStatusUpdate, admin: CurrentUser = Depends(get_current_admin), db: Session = Depends(get_db)):
     student = db.query(models.Student).filter(models.Student.id == student_id).first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found.")
+    if admin.is_hod and student.department_id != admin.department_id and student.department != admin.department_name:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Student does not belong to your department.")
     student.is_active = status_in.is_active
     student.updated_at = datetime.utcnow()
     db.commit()
@@ -408,9 +718,11 @@ async def bulk_import_students(
     program: str = Form("UG"),
     year: str = Form("1st Year"),
     semester: str = Form("Semester 1"),
-    admin: str = Depends(get_current_admin),
+    admin: CurrentUser = Depends(get_current_admin),
     db: Session = Depends(get_db)
 ):
+    if admin.is_hod and department != admin.department_name:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: You cannot import students for another department.")
     if not department.strip():
         raise HTTPException(status_code=400, detail="Department is required for student import.")
 
@@ -702,11 +1014,20 @@ def list_exams(
     subject_id: Optional[int] = None,
     status: Optional[str] = None,
     search: Optional[str] = None,
-    admin: str = Depends(get_current_admin),
+    admin: CurrentUser = Depends(get_current_admin),
     db: Session = Depends(get_db)
 ):
     q = db.query(models.Exam)
-    if department_id:
+    if admin.is_hod:
+        if department_id and department_id != admin.department_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Cannot query exams from another department.")
+        q = q.filter(
+            or_(
+                models.Exam.department_id == admin.department_id,
+                models.Exam.department_name.ilike(admin.department_name)
+            )
+        )
+    elif department_id:
         q = q.filter(models.Exam.department_id == department_id)
     if program_id:
         q = q.filter(models.Exam.program_id == program_id)
@@ -735,10 +1056,12 @@ def list_exams(
 
 
 @router.get("/admin/exams/{exam_id}", response_model=schemas.ExamOut)
-def get_exam(exam_id: int, admin: str = Depends(get_current_admin), db: Session = Depends(get_db)):
+def get_exam(exam_id: int, admin: CurrentUser = Depends(get_current_admin), db: Session = Depends(get_db)):
     ex = db.query(models.Exam).filter(models.Exam.id == exam_id).first()
     if not ex:
         raise HTTPException(status_code=404, detail="Exam not found.")
+    if admin.is_hod and ex.department_id != admin.department_id and ex.department_name != admin.department_name:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Exam does not belong to your department.")
     assigned_cnt = db.query(models.ExamStudent).filter(models.ExamStudent.exam_id == ex.id).count()
     attempts_cnt = db.query(models.Attempt).filter(models.Attempt.exam_id == ex.id).count()
     e_dict = schemas.ExamOut.model_validate(ex)
@@ -748,15 +1071,21 @@ def get_exam(exam_id: int, admin: str = Depends(get_current_admin), db: Session 
 
 
 @router.post("/admin/exams", response_model=schemas.ExamOut, status_code=status.HTTP_201_CREATED)
-def create_exam(exam_in: schemas.ExamCreate, admin: str = Depends(get_current_admin), db: Session = Depends(get_db)):
+def create_exam(exam_in: schemas.ExamCreate, admin: CurrentUser = Depends(get_current_admin), db: Session = Depends(get_db)):
     title = exam_in.title.strip()
     if not title:
         raise HTTPException(status_code=400, detail="Exam title is required.")
 
-    dept_name = None
-    if exam_in.department_id:
-        dept = db.query(models.Department).filter(models.Department.id == exam_in.department_id).first()
-        dept_name = dept.name if dept else None
+    if admin.is_hod:
+        if exam_in.department_id and exam_in.department_id != admin.department_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Cannot create exam for another department.")
+        exam_in.department_id = admin.department_id
+        dept_name = admin.department_name
+    else:
+        dept_name = None
+        if exam_in.department_id:
+            dept = db.query(models.Department).filter(models.Department.id == exam_in.department_id).first()
+            dept_name = dept.name if dept else None
 
     subj_name = None
     if exam_in.subject_id:
@@ -773,10 +1102,10 @@ def create_exam(exam_in: schemas.ExamCreate, admin: str = Depends(get_current_ad
             models.Question.subject_id == exam_in.subject_id,
             models.Question.is_active == True
         ).count()
-        if q_count > 0 and q_count < exam_in.total_questions:
+        if q_count < exam_in.total_questions:
             raise HTTPException(
                 status_code=400,
-                detail=f"Only {q_count} active question(s) available in this subject bank for {exam_in.total_questions} requested questions. Please add more questions or adjust question count."
+                detail=f"Only {q_count} active questions are available for this subject. Please add more questions."
             )
 
     prog_name = None
@@ -842,16 +1171,22 @@ def create_exam(exam_in: schemas.ExamCreate, admin: str = Depends(get_current_ad
 
 
 @router.put("/admin/exams/{exam_id}", response_model=schemas.ExamOut)
-def update_exam(exam_id: int, exam_in: schemas.ExamUpdate, admin: str = Depends(get_current_admin), db: Session = Depends(get_db)):
+def update_exam(exam_id: int, exam_in: schemas.ExamUpdate, admin: CurrentUser = Depends(get_current_admin), db: Session = Depends(get_db)):
     exam = db.query(models.Exam).filter(models.Exam.id == exam_id).first()
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found.")
+
+    if admin.is_hod:
+        if exam.department_id != admin.department_id and exam.department_name != admin.department_name:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Exam does not belong to your department.")
+        if exam_in.department_id and exam_in.department_id != admin.department_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Cannot transfer exam to another department.")
 
     if exam_in.title is not None:
         exam.title = exam_in.title.strip()
     if exam_in.code is not None:
         exam.code = exam_in.code.strip()
-    if exam_in.department_id is not None:
+    if exam_in.department_id is not None and not admin.is_hod:
         dept = db.query(models.Department).filter(models.Department.id == exam_in.department_id).first()
         exam.department_id = dept.id if dept else None
         exam.department_name = dept.name if dept else None
@@ -914,10 +1249,12 @@ def update_exam(exam_id: int, exam_in: schemas.ExamUpdate, admin: str = Depends(
 
 
 @router.patch("/admin/exams/{exam_id}/status", response_model=schemas.ExamOut)
-def set_exam_status(exam_id: int, status_in: schemas.QuestionStatusUpdate, status_name: Optional[str] = None, admin: str = Depends(get_current_admin), db: Session = Depends(get_db)):
+def set_exam_status(exam_id: int, status_in: schemas.QuestionStatusUpdate, status_name: Optional[str] = None, admin: CurrentUser = Depends(get_current_admin), db: Session = Depends(get_db)):
     exam = db.query(models.Exam).filter(models.Exam.id == exam_id).first()
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found.")
+    if admin.is_hod and exam.department_id != admin.department_id and exam.department_name != admin.department_name:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Exam does not belong to your department.")
     if status_name:
         exam.status = status_name
     exam.is_active = status_in.is_active
@@ -933,10 +1270,12 @@ def set_exam_status(exam_id: int, status_in: schemas.QuestionStatusUpdate, statu
 
 
 @router.get("/admin/exams/{exam_id}/students", response_model=List[schemas.AssignedStudentOut])
-def get_exam_assigned_students(exam_id: int, admin: str = Depends(get_current_admin), db: Session = Depends(get_db)):
+def get_exam_assigned_students(exam_id: int, admin: CurrentUser = Depends(get_current_admin), db: Session = Depends(get_db)):
     exam = db.query(models.Exam).filter(models.Exam.id == exam_id).first()
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found.")
+    if admin.is_hod and exam.department_id != admin.department_id and exam.department_name != admin.department_name:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Exam does not belong to your department.")
 
     assignments = db.query(models.ExamStudent).filter(models.ExamStudent.exam_id == exam_id).all()
     results = []
@@ -971,12 +1310,21 @@ def get_exam_assigned_students(exam_id: int, admin: str = Depends(get_current_ad
 def assign_students_to_exam(
     exam_id: int,
     assign_in: schemas.AssignStudentsRequest,
-    admin: str = Depends(get_current_admin),
+    admin: CurrentUser = Depends(get_current_admin),
     db: Session = Depends(get_db)
 ):
     exam = db.query(models.Exam).filter(models.Exam.id == exam_id).first()
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found.")
+    if admin.is_hod:
+        if exam.department_id != admin.department_id and exam.department_name != admin.department_name:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Exam does not belong to your department.")
+        st_count = db.query(models.Student).filter(
+            models.Student.id.in_(assign_in.student_ids),
+            or_(models.Student.department_id == admin.department_id, models.Student.department == admin.department_name)
+        ).count()
+        if st_count < len(assign_in.student_ids):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Cannot assign students from another department.")
 
     now = datetime.utcnow()
     added_count = 0
@@ -995,7 +1343,13 @@ def assign_students_to_exam(
 
 
 @router.delete("/admin/exams/{exam_id}/students/{student_id}")
-def unassign_student_from_exam(exam_id: int, student_id: int, admin: str = Depends(get_current_admin), db: Session = Depends(get_db)):
+def unassign_student_from_exam(exam_id: int, student_id: int, admin: CurrentUser = Depends(get_current_admin), db: Session = Depends(get_db)):
+    exam = db.query(models.Exam).filter(models.Exam.id == exam_id).first()
+    if not exam:
+        raise HTTPException(status_code=404, detail="Exam not found.")
+    if admin.is_hod and exam.department_id != admin.department_id and exam.department_name != admin.department_name:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Exam does not belong to your department.")
+
     rec = db.query(models.ExamStudent).filter(
         models.ExamStudent.exam_id == exam_id,
         models.ExamStudent.student_id == student_id
@@ -1008,10 +1362,12 @@ def unassign_student_from_exam(exam_id: int, student_id: int, admin: str = Depen
 
 
 @router.delete("/admin/exams/{exam_id}")
-def delete_exam(exam_id: int, admin: str = Depends(get_current_admin), db: Session = Depends(get_db)):
+def delete_exam(exam_id: int, admin: CurrentUser = Depends(get_current_admin), db: Session = Depends(get_db)):
     exam = db.query(models.Exam).filter(models.Exam.id == exam_id).first()
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found.")
+    if admin.is_hod and exam.department_id != admin.department_id and exam.department_name != admin.department_name:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Exam does not belong to your department.")
 
     attempt_cnt = db.query(models.Attempt).filter(models.Attempt.exam_id == exam_id).count()
     if attempt_cnt > 0:
@@ -1665,8 +2021,41 @@ def get_attempt_result(attempt_id: int, db: Session = Depends(get_db)):
 # =========================================================================
 
 @router.get("/admin/dashboard", response_model=schemas.AdminDashboardStats)
-def get_admin_dashboard(admin: str = Depends(get_current_admin), db: Session = Depends(get_db)):
-    total_students = db.query(models.Student).filter(models.Student.is_active == True).count()
+def get_admin_dashboard(admin: CurrentUser = Depends(get_current_admin), db: Session = Depends(get_db)):
+    if admin.is_hod:
+        dept_id = admin.department_id
+        dept_student_ids = [s.id for s in db.query(models.Student.id).filter(
+            or_(models.Student.department_id == dept_id, models.Student.department.ilike(admin.department_name))
+        ).all()]
+        total_students = len(dept_student_ids)
+        total_attempts = db.query(models.Attempt).filter(models.Attempt.student_id.in_(dept_student_ids)).count() if dept_student_ids else 0
+        completed_tests = db.query(models.Attempt).filter(models.Attempt.student_id.in_(dept_student_ids), models.Attempt.status.in_(["completed", "timed_out"])).count() if dept_student_ids else 0
+        avg_score = db.query(func.avg(models.Attempt.score)).filter(models.Attempt.student_id.in_(dept_student_ids), models.Attempt.status.in_(["completed", "timed_out"])).scalar() if dept_student_ids else 0.0
+        avg_pct = db.query(func.avg(models.Attempt.percentage)).filter(models.Attempt.student_id.in_(dept_student_ids), models.Attempt.status.in_(["completed", "timed_out"])).scalar() if dept_student_ids else 0.0
+
+        total_departments = 1
+        total_subjects = db.query(models.Subject).filter(models.Subject.department_id == dept_id).count()
+        active_subjects = db.query(models.Subject).filter(models.Subject.department_id == dept_id, models.Subject.is_active == True).count()
+        total_exams = db.query(models.Exam).filter(models.Exam.department_id == dept_id).count()
+        active_exams = db.query(models.Exam).filter(models.Exam.department_id == dept_id, models.Exam.status == "published", models.Exam.is_active == True).count()
+        dept_subj_ids = [s.id for s in db.query(models.Subject.id).filter(models.Subject.department_id == dept_id).all()]
+        total_questions = db.query(models.Question).filter(models.Question.subject_id.in_(dept_subj_ids)).count() if dept_subj_ids else 0
+
+        return {
+            "total_students": total_students,
+            "total_attempts": total_attempts,
+            "completed_tests": completed_tests,
+            "average_score": round(float(avg_score or 0.0), 2),
+            "average_percentage": round(float(avg_pct or 0.0), 2),
+            "total_departments": total_departments,
+            "total_subjects": total_subjects,
+            "active_subjects": active_subjects,
+            "total_exams": total_exams,
+            "active_exams": active_exams,
+            "total_questions": total_questions
+        }
+
+    total_students = db.query(models.Student).count()
     total_attempts = db.query(models.Attempt).count()
     completed_tests = db.query(models.Attempt).filter(models.Attempt.status.in_(["completed", "timed_out"])).count()
     
@@ -1699,15 +2088,28 @@ def get_admin_dashboard(admin: str = Depends(get_current_admin), db: Session = D
 def get_admin_students(
     search: Optional[str] = Query(None),
     department: Optional[str] = Query(None),
-    admin: str = Depends(get_current_admin),
+    admin: CurrentUser = Depends(get_current_admin),
     db: Session = Depends(get_db)
 ):
     query = db.query(models.Student)
+    if admin.is_hod:
+        if department and department != admin.department_name:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: Cannot access student records of another department."
+            )
+        query = query.filter(
+            or_(
+                models.Student.department_id == admin.department_id,
+                models.Student.department.ilike(admin.department_name)
+            )
+        )
+    elif department:
+        query = query.filter(models.Student.department == department)
+
     if search:
         s = f"%{search.strip()}%"
         query = query.filter(or_(models.Student.name.ilike(s), models.Student.enrollment_no.ilike(s)))
-    if department:
-        query = query.filter(models.Student.department == department)
 
     students = query.order_by(models.Student.created_at.desc()).all()
     summaries = []
@@ -1730,7 +2132,7 @@ def get_admin_students(
             "score": latest_attempt.score if latest_attempt else None,
             "percentage": latest_attempt.percentage if latest_attempt else None,
             "attempt_date": (latest_attempt.completed_at or latest_attempt.submitted_at or latest_attempt.started_at) if latest_attempt else None,
-            "status": latest_attempt.status if latest_attempt else "unattempted",
+            "status": latest_attempt.status if latest_attempt else "Not Attempted",
             "attempt_id": latest_attempt.id if latest_attempt else None,
             "exam_title": latest_attempt.exam_title_snapshot if latest_attempt else None,
             "tab_switch_count": latest_attempt.tab_switch_count if latest_attempt else 0,
@@ -1744,12 +2146,14 @@ def get_admin_students(
 def get_admin_student_details(
     student_id: int,
     attempt_id: Optional[int] = Query(None),
-    admin: str = Depends(get_current_admin),
+    admin: CurrentUser = Depends(get_current_admin),
     db: Session = Depends(get_db)
 ):
     student = db.query(models.Student).filter(models.Student.id == student_id).first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found.")
+    if admin.is_hod and student.department_id != admin.department_id and student.department != admin.department_name:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Student does not belong to your department.")
 
     if attempt_id:
         attempt = db.query(models.Attempt).filter(
@@ -1770,7 +2174,7 @@ def get_admin_student_details(
 @router.delete("/admin/attempts/{attempt_id}")
 def delete_assessment_attempt(
     attempt_id: int,
-    admin: str = Depends(get_current_admin),
+    admin: CurrentUser = Depends(get_current_admin),
     db: Session = Depends(get_db)
 ):
     """
@@ -1780,6 +2184,11 @@ def delete_assessment_attempt(
     attempt = db.query(models.Attempt).filter(models.Attempt.id == attempt_id).first()
     if not attempt:
         raise HTTPException(status_code=404, detail="Assessment attempt not found.")
+
+    if admin.is_hod:
+        st = db.query(models.Student).filter(models.Student.id == attempt.student_id).first()
+        if not st or (st.department_id != admin.department_id and st.department != admin.department_name):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Cannot delete assessment attempt from another department.")
 
     student_id = attempt.student_id
     db.query(models.StudentAnswer).filter(models.StudentAnswer.attempt_id == attempt_id).delete(synchronize_session=False)
@@ -1810,14 +2219,25 @@ def get_admin_questions(
     difficulty: Optional[str] = None,
     is_active: Optional[bool] = None,
     search: Optional[str] = None,
-    admin: str = Depends(get_current_admin),
+    admin: CurrentUser = Depends(get_current_admin),
     db: Session = Depends(get_db)
 ):
     q = db.query(models.Question)
+    if admin.is_hod:
+        dept_subj_ids = [s.id for s in db.query(models.Subject.id).filter(models.Subject.department_id == admin.department_id).all()]
+        q = q.filter(
+            or_(
+                models.Question.subject_id.in_(dept_subj_ids),
+                models.Question.department_id == admin.department_id,
+                models.Question.department_name.ilike(admin.department_name)
+            )
+        )
+        if department_id and department_id != admin.department_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Cannot query questions from another department.")
+    elif department_id:
+        q = q.filter(models.Question.department_id == department_id)
     if subject_id:
         q = q.filter(models.Question.subject_id == subject_id)
-    if department_id:
-        q = q.filter(models.Question.department_id == department_id)
     if program_id:
         q = q.filter(models.Question.program_id == program_id)
     if academic_year_id:
@@ -1838,23 +2258,40 @@ def get_admin_questions(
 
 
 @router.get("/admin/questions/{question_id}", response_model=schemas.AdminQuestionOut)
-def get_admin_question(question_id: int, admin: str = Depends(get_current_admin), db: Session = Depends(get_db)):
+def get_admin_question(question_id: int, admin: CurrentUser = Depends(get_current_admin), db: Session = Depends(get_db)):
     q = db.query(models.Question).filter(models.Question.id == question_id).first()
     if not q:
         raise HTTPException(status_code=404, detail="Question not found.")
+    if admin.is_hod:
+        if q.subject_id:
+            subj = db.query(models.Subject).filter(models.Subject.id == q.subject_id).first()
+            if not subj or subj.department_id != admin.department_id:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Question does not belong to your department.")
+        elif q.department_id and q.department_id != admin.department_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Question does not belong to your department.")
     return q
 
 
 @router.post("/admin/questions", response_model=schemas.AdminQuestionOut, status_code=status.HTTP_201_CREATED)
-def create_question(q_in: schemas.QuestionCreate, admin: str = Depends(get_current_admin), db: Session = Depends(get_db)):
+def create_question(q_in: schemas.QuestionCreate, admin: CurrentUser = Depends(get_current_admin), db: Session = Depends(get_db)):
     correct = q_in.correct_answer.strip().upper()
     if correct not in ["A", "B", "C", "D"]:
         raise HTTPException(status_code=400, detail="Correct answer must be A, B, C, or D.")
 
-    dept_name = None
-    if q_in.department_id:
-        dept = db.query(models.Department).filter(models.Department.id == q_in.department_id).first()
-        dept_name = dept.name if dept else None
+    if admin.is_hod:
+        if q_in.department_id and q_in.department_id != admin.department_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Cannot create questions for another department.")
+        if q_in.subject_id:
+            subj = db.query(models.Subject).filter(models.Subject.id == q_in.subject_id).first()
+            if not subj or subj.department_id != admin.department_id:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Target subject does not belong to your department.")
+        q_in.department_id = admin.department_id
+        dept_name = admin.department_name
+    else:
+        dept_name = None
+        if q_in.department_id:
+            dept = db.query(models.Department).filter(models.Department.id == q_in.department_id).first()
+            dept_name = dept.name if dept else None
 
     subj_name = None
     if q_in.subject_id:
@@ -1908,10 +2345,16 @@ def create_question(q_in: schemas.QuestionCreate, admin: str = Depends(get_curre
 
 
 @router.put("/admin/questions/{question_id}", response_model=schemas.AdminQuestionOut)
-def update_question(question_id: int, q_in: schemas.QuestionUpdate, admin: str = Depends(get_current_admin), db: Session = Depends(get_db)):
+def update_question(question_id: int, q_in: schemas.QuestionUpdate, admin: CurrentUser = Depends(get_current_admin), db: Session = Depends(get_db)):
     q = db.query(models.Question).filter(models.Question.id == question_id).first()
     if not q:
         raise HTTPException(status_code=404, detail="Question not found.")
+
+    if admin.is_hod:
+        if q.department_id and q.department_id != admin.department_id:
+            raise HTTPException(status_code=403, detail="Forbidden: Question belongs to another department.")
+        if q_in.department_id is not None and q_in.department_id != admin.department_id:
+            raise HTTPException(status_code=403, detail="Forbidden: Cannot assign question to another department.")
 
     if q_in.correct_answer is not None:
         c = q_in.correct_answer.strip().upper()
@@ -1966,10 +2409,12 @@ def update_question(question_id: int, q_in: schemas.QuestionUpdate, admin: str =
 
 
 @router.patch("/admin/questions/{question_id}/status", response_model=schemas.AdminQuestionOut)
-def toggle_question_status(question_id: int, status_in: schemas.QuestionStatusUpdate, admin: str = Depends(get_current_admin), db: Session = Depends(get_db)):
+def toggle_question_status(question_id: int, status_in: schemas.QuestionStatusUpdate, admin: CurrentUser = Depends(get_current_admin), db: Session = Depends(get_db)):
     q = db.query(models.Question).filter(models.Question.id == question_id).first()
     if not q:
         raise HTTPException(status_code=404, detail="Question not found.")
+    if admin.is_hod and q.department_id and q.department_id != admin.department_id:
+        raise HTTPException(status_code=403, detail="Forbidden: Question belongs to another department.")
     q.is_active = status_in.is_active
     q.updated_at = datetime.utcnow()
     db.commit()
@@ -1978,10 +2423,12 @@ def toggle_question_status(question_id: int, status_in: schemas.QuestionStatusUp
 
 
 @router.post("/admin/questions/{question_id}/deactivate", response_model=schemas.AdminQuestionOut)
-def deactivate_question(question_id: int, admin: str = Depends(get_current_admin), db: Session = Depends(get_db)):
+def deactivate_question(question_id: int, admin: CurrentUser = Depends(get_current_admin), db: Session = Depends(get_db)):
     q = db.query(models.Question).filter(models.Question.id == question_id).first()
     if not q:
         raise HTTPException(status_code=404, detail="Question not found.")
+    if admin.is_hod and q.department_id and q.department_id != admin.department_id:
+        raise HTTPException(status_code=403, detail="Forbidden: Question belongs to another department.")
     q.is_active = False
     q.updated_at = datetime.utcnow()
     db.commit()
@@ -1990,7 +2437,7 @@ def deactivate_question(question_id: int, admin: str = Depends(get_current_admin
 
 
 @router.delete("/admin/questions/{question_id}")
-def delete_question(question_id: int, admin: str = Depends(get_current_admin), db: Session = Depends(get_db)):
+def delete_question(question_id: int, admin: CurrentUser = Depends(get_current_admin), db: Session = Depends(get_db)):
     """
     CRITICAL REQUIREMENT: QUESTION DELETE
     If referenced by attempts, block hard deletion and recommend deactivate.
@@ -1999,6 +2446,9 @@ def delete_question(question_id: int, admin: str = Depends(get_current_admin), d
     q = db.query(models.Question).filter(models.Question.id == question_id).first()
     if not q:
         raise HTTPException(status_code=404, detail="Question not found.")
+
+    if admin.is_hod and q.department_id and q.department_id != admin.department_id:
+        raise HTTPException(status_code=403, detail="Forbidden: Question belongs to another department.")
 
     usage_count = db.query(models.StudentAnswer).filter(models.StudentAnswer.question_id == question_id).count()
     exam_usage = db.query(models.ExamQuestion).filter(models.ExamQuestion.question_id == question_id).count()
@@ -2019,7 +2469,7 @@ def delete_question(question_id: int, admin: str = Depends(get_current_admin), d
 # =========================================================================
 
 @router.get("/admin/assessment-settings", response_model=schemas.AssessmentSettingsOut)
-def get_assessment_settings(admin: str = Depends(get_current_admin), db: Session = Depends(get_db)):
+def get_assessment_settings(admin: CurrentUser = Depends(get_current_admin), db: Session = Depends(get_db)):
     setting = get_or_create_settings(db)
     active_cnt = db.query(models.Question).filter(models.Question.is_active == True).count()
     total_cnt = db.query(models.Question).count()
@@ -2033,7 +2483,7 @@ def get_assessment_settings(admin: str = Depends(get_current_admin), db: Session
 
 
 @router.put("/admin/assessment-settings", response_model=schemas.AssessmentSettingsOut)
-def update_assessment_settings(settings_in: schemas.AssessmentSettingsUpdate, admin: str = Depends(get_current_admin), db: Session = Depends(get_db)):
+def update_assessment_settings(settings_in: schemas.AssessmentSettingsUpdate, admin: CurrentUser = Depends(require_super_admin), db: Session = Depends(get_db)):
     active_cnt = db.query(models.Question).filter(models.Question.is_active == True).count()
     if settings_in.question_count > active_cnt and active_cnt > 0:
         raise HTTPException(
@@ -2063,8 +2513,11 @@ def update_assessment_settings(settings_in: schemas.AssessmentSettingsUpdate, ad
 # =========================================================================
 
 @router.get("/admin/export/excel")
-def export_students_excel(admin: str = Depends(get_current_admin), db: Session = Depends(get_db)):
-    students = db.query(models.Student).order_by(models.Student.enrollment_no.asc()).all()
+def export_students_excel(type: Optional[str] = Query(None), admin: CurrentUser = Depends(get_current_admin), db: Session = Depends(get_db)):
+    query = db.query(models.Student)
+    if admin.is_hod and admin.department_id:
+        query = query.filter(models.Student.department_id == admin.department_id)
+    students = query.order_by(models.Student.enrollment_no.asc()).all()
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -2081,6 +2534,8 @@ def export_students_excel(admin: str = Depends(get_current_admin), db: Session =
     for s in students:
         attempts = db.query(models.Attempt).filter(models.Attempt.student_id == s.id).order_by(models.Attempt.started_at.desc()).all()
         if not attempts:
+            if type == "summary":
+                continue
             ws.append([
                 s.id, s.enrollment_no, s.name, s.department, s.gender or "",
                 s.program or "", s.year or "", s.semester or "", "N/A", "N/A",
@@ -2116,8 +2571,11 @@ def export_students_excel(admin: str = Depends(get_current_admin), db: Session =
 
 
 @router.get("/admin/export/csv")
-def export_students_csv(admin: str = Depends(get_current_admin), db: Session = Depends(get_db)):
-    students = db.query(models.Student).order_by(models.Student.enrollment_no.asc()).all()
+def export_students_csv(type: Optional[str] = Query(None), admin: CurrentUser = Depends(get_current_admin), db: Session = Depends(get_db)):
+    query = db.query(models.Student)
+    if admin.is_hod and admin.department_id:
+        query = query.filter(models.Student.department_id == admin.department_id)
+    students = query.order_by(models.Student.enrollment_no.asc()).all()
 
     output = io.StringIO()
     writer = csv.writer(output)
@@ -2132,6 +2590,8 @@ def export_students_csv(admin: str = Depends(get_current_admin), db: Session = D
     for s in students:
         attempts = db.query(models.Attempt).filter(models.Attempt.student_id == s.id).order_by(models.Attempt.started_at.desc()).all()
         if not attempts:
+            if type == "summary":
+                continue
             writer.writerow([
                 s.id, s.enrollment_no, s.name, s.department, s.gender or "",
                 s.program or "", s.year or "", s.semester or "", "N/A", "N/A",
@@ -2161,63 +2621,3 @@ def export_students_csv(admin: str = Depends(get_current_admin), db: Session = D
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
-
-
-# =========================================================================
-# 12. DANGER ZONE: ADMIN-ONLY COMPLETE DATA PURGE
-# =========================================================================
-
-@router.post("/admin/system/clear-all-data")
-def clear_all_application_data(
-    req: schemas.ClearAllDataRequest,
-    admin: str = Depends(get_current_admin),
-    db: Session = Depends(get_db)
-):
-    """
-    DANGER ZONE: Controlled administrator-only purge of all application data.
-    Requires exact confirmation phrase: 'DELETE ALL DATA'.
-    Preserves database schema, alembic migrations, system settings, and admin auth.
-    """
-    if req.confirmation_phrase.strip() != "DELETE ALL DATA":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Confirmation phrase mismatch. You must type 'DELETE ALL DATA' exactly."
-        )
-
-    try:
-        deleted_records = {}
-        # Order respects all foreign key relationships:
-        deleted_records["exam_security_logs"] = db.query(models.ExamSecurityLog).delete()
-        deleted_records["student_answers"] = db.query(models.StudentAnswer).delete()
-        deleted_records["attempts"] = db.query(models.Attempt).delete()
-        deleted_records["exam_students"] = db.query(models.ExamStudent).delete()
-        deleted_records["exam_questions"] = db.query(models.ExamQuestion).delete()
-        deleted_records["exams"] = db.query(models.Exam).delete()
-        deleted_records["students"] = db.query(models.Student).delete()
-        deleted_records["questions"] = db.query(models.Question).delete()
-        deleted_records["subjects"] = db.query(models.Subject).delete()
-        deleted_records["semesters"] = db.query(models.Semester).delete()
-        deleted_records["academic_years"] = db.query(models.AcademicYear).delete()
-        deleted_records["programs"] = db.query(models.Program).delete()
-        deleted_records["departments"] = db.query(models.Department).delete()
-
-        # Reset AssessmentSetting default parameters to baseline
-        setting = db.query(models.AssessmentSetting).first()
-        if setting:
-            setting.question_count = 50
-            setting.time_limit_minutes = 60
-            setting.updated_at = datetime.utcnow()
-
-        db.commit()
-
-        return {
-            "status": "success",
-            "message": "All application data cleared permanently.",
-            "cleared_records": deleted_records
-        }
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to clear application data: {str(e)}"
-        )

@@ -8,11 +8,11 @@ import {
   ArrowRight,
   AlertCircle,
   ShieldCheck,
-  GraduationCap,
   KeyRound,
   Sparkles
 } from 'lucide-react';
 import api from '../services/api';
+import { CollegeBranding } from '../components/CollegeBranding';
 
 export const StudentRegistration: React.FC = () => {
   const navigate = useNavigate();
@@ -90,7 +90,7 @@ export const StudentRegistration: React.FC = () => {
       if (err.response && err.response.data && err.response.data.detail) {
         setPracticeError(err.response.data.detail);
       } else {
-        setPracticeError('Failed to start test. Please check backend connection.');
+        setPracticeError('Failed to initialize test attempt. Please try again.');
       }
     } finally {
       setPracticeLoading(false);
@@ -98,29 +98,29 @@ export const StudentRegistration: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 flex flex-col justify-center items-center p-4">
-      <div className="max-w-md w-full bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl p-8 space-y-6 relative overflow-hidden">
-        {/* Glow decoration */}
-        <div className="absolute top-0 right-0 w-64 h-64 bg-sky-500/10 rounded-full blur-3xl pointer-events-none" />
+    <div className="min-h-screen bg-[#F5F8FC] flex flex-col justify-center items-center p-4">
+      <div className="max-w-md w-full bg-white border border-slate-200 rounded-3xl shadow-xl p-8 space-y-6 relative overflow-hidden">
+        {/* Subtle accent decoration */}
+        <div className="absolute top-0 right-0 w-48 h-48 bg-blue-50/80 rounded-full blur-2xl pointer-events-none" />
 
-        {/* Header */}
-        <div className="text-center space-y-2 relative z-10">
-          <div className="inline-flex p-3 bg-sky-500/10 text-sky-400 rounded-2xl border border-sky-500/20 mb-1">
-            <GraduationCap className="w-8 h-8" />
+        {/* Header — College Branding */}
+        <div className="flex flex-col items-center space-y-3 relative z-10">
+          <CollegeBranding size="md" theme="light" />
+          <div className="text-center pt-2 border-t border-slate-200 w-full">
+            <p className="text-xs font-bold text-blue-700 uppercase tracking-widest">Online Examination Portal</p>
+            <p className="text-[11px] text-slate-500">College Examination &amp; Assessment System</p>
           </div>
-          <h1 className="text-2xl font-black text-white tracking-tight">College Examination Portal</h1>
-          <p className="text-xs text-slate-400 font-medium">Departmental Examination & Assessment System</p>
         </div>
 
         {/* Tab Switcher */}
-        <div className="flex bg-slate-950 p-1 rounded-2xl border border-slate-800/80 relative z-10">
+        <div className="flex bg-slate-100 p-1 rounded-2xl border border-slate-200 relative z-10">
           <button
             type="button"
             onClick={() => setActiveMode('login')}
             className={`flex-1 py-2 text-xs font-bold rounded-xl transition-all flex items-center justify-center space-x-1.5 ${
               activeMode === 'login'
-                ? 'bg-sky-500 text-white shadow-md shadow-sky-500/20'
-                : 'text-slate-400 hover:text-white'
+                ? 'bg-blue-600 text-white shadow-xs'
+                : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             <KeyRound className="w-3.5 h-3.5" />
@@ -131,8 +131,8 @@ export const StudentRegistration: React.FC = () => {
             onClick={() => setActiveMode('practice')}
             className={`flex-1 py-2 text-xs font-bold rounded-xl transition-all flex items-center justify-center space-x-1.5 ${
               activeMode === 'practice'
-                ? 'bg-sky-500 text-white shadow-md shadow-sky-500/20'
-                : 'text-slate-400 hover:text-white'
+                ? 'bg-blue-600 text-white shadow-xs'
+                : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             <Sparkles className="w-3.5 h-3.5" />
@@ -144,18 +144,18 @@ export const StudentRegistration: React.FC = () => {
         {activeMode === 'login' && (
           <form onSubmit={handleStudentLogin} className="space-y-4 relative z-10">
             {loginError && (
-              <div className="p-3.5 bg-rose-500/10 border border-rose-500/30 rounded-xl flex items-start space-x-2.5 text-rose-400 text-xs">
-                <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+              <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl flex items-start space-x-2.5 text-rose-700 text-xs">
+                <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-rose-500" />
                 <span>{loginError}</span>
               </div>
             )}
 
             <div>
-              <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+              <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-2">
                 Enrollment / Roll Number *
               </label>
               <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-500">
+                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
                   <CreditCard className="w-4 h-4" />
                 </div>
                 <input
@@ -164,17 +164,17 @@ export const StudentRegistration: React.FC = () => {
                   value={loginEnrollment}
                   onChange={(e) => setLoginEnrollment(e.target.value)}
                   placeholder="e.g. BT26F05F001"
-                  className="w-full pl-10 pr-4 py-3 bg-slate-950 border border-slate-800 rounded-xl text-white placeholder-slate-600 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 transition-colors text-sm"
+                  className="w-full pl-10 pr-4 py-3 bg-white border border-slate-300 rounded-xl text-slate-900 placeholder-slate-400 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 transition-colors text-sm"
                 />
               </div>
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+              <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-2">
                 Password or Secure PIN *
               </label>
               <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-500">
+                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
                   <Lock className="w-4 h-4" />
                 </div>
                 <input
@@ -183,18 +183,18 @@ export const StudentRegistration: React.FC = () => {
                   value={loginPassword}
                   onChange={(e) => setLoginPassword(e.target.value)}
                   placeholder="Enter your student password / PIN"
-                  className="w-full pl-10 pr-4 py-3 bg-slate-950 border border-slate-800 rounded-xl text-white placeholder-slate-600 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 transition-colors text-sm"
+                  className="w-full pl-10 pr-4 py-3 bg-white border border-slate-300 rounded-xl text-slate-900 placeholder-slate-400 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 transition-colors text-sm"
                 />
               </div>
               <p className="text-[11px] text-slate-500 mt-1.5">
-                Default password for new enrollments: <span className="text-slate-400 font-mono">student123</span> or your Roll Number.
+                Default password for new enrollments: <span className="text-slate-700 font-mono font-medium">student123</span> or your Roll Number.
               </p>
             </div>
 
             <button
               type="submit"
               disabled={loginLoading}
-              className="w-full mt-5 py-3.5 px-6 bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white font-bold rounded-xl shadow-lg shadow-sky-500/25 flex items-center justify-center space-x-2 transition-all disabled:opacity-50 text-sm"
+              className="w-full mt-5 py-3.5 px-6 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-md shadow-blue-600/20 flex items-center justify-center space-x-2 transition-all disabled:opacity-50 text-sm"
             >
               {loginLoading ? (
                 <span>Authenticating...</span>
@@ -212,18 +212,18 @@ export const StudentRegistration: React.FC = () => {
         {activeMode === 'practice' && (
           <form onSubmit={handleStartPracticeTest} className="space-y-4 relative z-10">
             {practiceError && (
-              <div className="p-3.5 bg-rose-500/10 border border-rose-500/30 rounded-xl flex items-start space-x-2.5 text-rose-400 text-xs">
-                <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+              <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl flex items-start space-x-2.5 text-rose-700 text-xs">
+                <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-rose-500" />
                 <span>{practiceError}</span>
               </div>
             )}
 
             <div>
-              <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+              <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-2">
                 Enrollment Number *
               </label>
               <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-500">
+                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
                   <CreditCard className="w-4 h-4" />
                 </div>
                 <input
@@ -232,17 +232,17 @@ export const StudentRegistration: React.FC = () => {
                   value={enrollmentNo}
                   onChange={(e) => setEnrollmentNo(e.target.value)}
                   placeholder="e.g. EN2024001"
-                  className="w-full pl-10 pr-4 py-3 bg-slate-950 border border-slate-800 rounded-xl text-white placeholder-slate-600 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 transition-colors text-sm"
+                  className="w-full pl-10 pr-4 py-3 bg-white border border-slate-300 rounded-xl text-slate-900 placeholder-slate-400 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 transition-colors text-sm"
                 />
               </div>
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+              <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-2">
                 Student Name *
               </label>
               <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-500">
+                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
                   <User className="w-4 h-4" />
                 </div>
                 <input
@@ -251,17 +251,17 @@ export const StudentRegistration: React.FC = () => {
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="e.g. Alex Mercer"
-                  className="w-full pl-10 pr-4 py-3 bg-slate-950 border border-slate-800 rounded-xl text-white placeholder-slate-600 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 transition-colors text-sm"
+                  className="w-full pl-10 pr-4 py-3 bg-white border border-slate-300 rounded-xl text-slate-900 placeholder-slate-400 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 transition-colors text-sm"
                 />
               </div>
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+              <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-2">
                 Department *
               </label>
               <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-500">
+                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
                   <Building className="w-4 h-4" />
                 </div>
                 <input
@@ -270,7 +270,7 @@ export const StudentRegistration: React.FC = () => {
                   value={department}
                   onChange={(e) => setDepartment(e.target.value)}
                   placeholder="e.g. Computer Science & Engineering"
-                  className="w-full pl-10 pr-4 py-3 bg-slate-950 border border-slate-800 rounded-xl text-white placeholder-slate-600 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 transition-colors text-sm"
+                  className="w-full pl-10 pr-4 py-3 bg-white border border-slate-300 rounded-xl text-slate-900 placeholder-slate-400 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 transition-colors text-sm"
                 />
               </div>
             </div>
@@ -278,7 +278,7 @@ export const StudentRegistration: React.FC = () => {
             <button
               type="submit"
               disabled={practiceLoading}
-              className="w-full mt-5 py-3.5 px-6 bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white font-bold rounded-xl shadow-lg shadow-sky-500/25 flex items-center justify-center space-x-2 transition-all disabled:opacity-50 text-sm"
+              className="w-full mt-5 py-3.5 px-6 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-md shadow-blue-600/20 flex items-center justify-center space-x-2 transition-all disabled:opacity-50 text-sm"
             >
               {practiceLoading ? (
                 <span>Initializing DSA Test...</span>
@@ -293,12 +293,12 @@ export const StudentRegistration: React.FC = () => {
         )}
 
         {/* Footer Admin Link */}
-        <div className="pt-4 border-t border-slate-800/80 text-center relative z-10">
+        <div className="pt-4 border-t border-slate-200 text-center relative z-10">
           <button
             onClick={() => navigate('/admin/login')}
-            className="text-xs text-slate-500 hover:text-slate-300 inline-flex items-center space-x-1.5 transition-colors"
+            className="text-xs text-slate-500 hover:text-blue-600 inline-flex items-center space-x-1.5 transition-colors font-medium"
           >
-            <ShieldCheck className="w-4 h-4" />
+            <ShieldCheck className="w-4 h-4 text-blue-600" />
             <span>Admin Management Portal</span>
           </button>
         </div>

@@ -278,3 +278,26 @@ export interface AttemptStatus {
   fullscreen_exit_count?: number;
   answers: { [qNum: number]: string | null };
 }
+
+export interface DepartmentStats {
+  id: number;
+  name: string;
+  code?: string;
+  is_active: boolean;
+  students_count: number;
+  active_subjects_count: number;
+  exams_count: number;
+  active_exams_count: number;
+}
+
+export interface AdminUser {
+  id: number;
+  username: string;
+  full_name: string;
+  email?: string | null;
+  role: 'super_admin' | 'hod' | 'faculty';
+  department_id?: number | null;
+  department_name?: string | null;
+  is_active: boolean;
+  created_at?: string;
+}
