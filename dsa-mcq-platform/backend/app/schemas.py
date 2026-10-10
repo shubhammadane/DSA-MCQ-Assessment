@@ -163,6 +163,16 @@ class StudentToken(BaseModel):
     token_type: str = "bearer"
     student: StudentOut
 
+class BulkDeleteStudentsRequest(BaseModel):
+    student_ids: List[int]
+
+class BulkDeleteStudentsResponse(BaseModel):
+    status: str
+    message: str
+    deleted_count: int
+    student_ids: List[int]
+
+
 
 # ==========================================
 # 5. Question Schemas

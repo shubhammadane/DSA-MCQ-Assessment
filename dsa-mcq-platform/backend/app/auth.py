@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 from typing import Optional, Any
 from jose import JWTError, jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Query
 from fastapi.security import OAuth2PasswordBearer
 from passlib.hash import pbkdf2_sha256
 from sqlalchemy.orm import Session
@@ -11,6 +11,7 @@ from app.database import get_db
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 optional_oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 student_oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/student/login")
+
 
 
 class CurrentUser:
@@ -173,6 +174,26 @@ def get_optional_admin(
         return get_current_admin(token=token, db=db)
     except Exception:
         return None
+
+
+def resolve_admin_user(
+    header_admin: Optional[CurrentUser] = Depends(get_optional_admin),
+    token: Optional[str] = Query(None, alias="token"),
+    db: Session = Depends(get_db)
+) -> CurrentUser:
+    if header_admin:
+        return header_admin
+    if token:
+        try:
+            return get_current_admin(token=token, db=db)
+        except Exception:
+            pass
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate admin credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
 
 
 def get_current_student(

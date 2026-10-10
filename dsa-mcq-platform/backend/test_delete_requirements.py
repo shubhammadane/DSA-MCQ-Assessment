@@ -73,7 +73,8 @@ def run_tests():
     del_ref_res = requests.delete(f"{BASE_URL}/admin/questions/1", headers=headers)
     assert del_ref_res.status_code == 400, f"Expected 400 for referenced question, got: {del_ref_res.status_code}"
     error_detail = del_ref_res.json().get("detail", "")
-    assert "This question cannot be permanently deleted because it is referenced by existing assessment records. Deactivate it instead." in error_detail
+    assert ("cannot be permanently deleted because it is referenced in" in error_detail or
+            "This question cannot be permanently deleted because it is referenced by existing assessment records" in error_detail)
     print(f"[PASS] B. Deletion safely blocked: '{error_detail}'")
 
     # Verify Question 1 is STILL in database

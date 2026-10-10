@@ -84,6 +84,15 @@ export const AdminDashboard: React.FC = () => {
   const [importSem, setImportSem] = useState('Semester 1');
   const [importLoading, setImportLoading] = useState(false);
 
+  // Student Selection & Safe Deletion State
+  const [selectedStudentIds, setSelectedStudentIds] = useState<number[]>([]);
+  const [showDeleteStudentModal, setShowDeleteStudentModal] = useState(false);
+  const [studentToDelete, setStudentToDelete] = useState<Student | null>(null);
+  const [deleteConfirmedBackup, setDeleteConfirmedBackup] = useState(false);
+  const [deletingStudents, setDeletingStudents] = useState(false);
+  const [showExportOptionsModal, setShowExportOptionsModal] = useState(false);
+
+
   // Student Form State
   const [stFormEnrollment, setStFormEnrollment] = useState('');
   const [stFormName, setStFormName] = useState('');
@@ -641,6 +650,72 @@ export const AdminDashboard: React.FC = () => {
       setImportLoading(false);
     }
   };
+
+  // Student Selection & Safe Deletion Handlers
+  const toggleSelectStudent = (id: number) => {
+    setSelectedStudentIds(prev =>
+      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+    );
+  };
+
+  const handleOpenDeleteSingleStudent = (st: Student) => {
+    setStudentToDelete(st);
+    setSelectedStudentIds([st.id]);
+    setDeleteConfirmedBackup(false);
+    setShowDeleteStudentModal(true);
+  };
+
+  const handleOpenDeleteMultipleStudents = () => {
+    if (selectedStudentIds.length === 0) return;
+    setStudentToDelete(null);
+    setDeleteConfirmedBackup(false);
+    setShowDeleteStudentModal(true);
+  };
+
+  const handleConfirmDeleteStudents = async () => {
+    if (selectedStudentIds.length === 0) return;
+    if (!deleteConfirmedBackup) {
+      showNotice('error', 'Please confirm you have exported backup data before proceeding.');
+      return;
+    }
+
+    setDeletingStudents(true);
+    try {
+      if (selectedStudentIds.length === 1) {
+        const studentId = selectedStudentIds[0];
+        const res = await api.delete(`/admin/students/${studentId}`);
+        showNotice('success', res.data.message || 'Student and dependent records safely deleted.');
+      } else {
+        const res = await api.post('/admin/students/bulk-delete', { student_ids: selectedStudentIds });
+        showNotice('success', res.data.message || `Deleted ${res.data.deleted_count} students safely.`);
+      }
+
+      setShowDeleteStudentModal(false);
+      setStudentToDelete(null);
+      setSelectedStudentIds([]);
+      setDeleteConfirmedBackup(false);
+      loadStudents();
+      loadOverview();
+    } catch (err: any) {
+      showNotice('error', err.response?.data?.detail || 'Failed to delete student(s).');
+    } finally {
+      setDeletingStudents(false);
+    }
+  };
+
+  const handleDownloadStudentData = (format: 'xlsx' | 'csv', specificStudentIds?: number[]) => {
+    const token = localStorage.getItem('admin_token');
+    let url = `${API_BASE_URL}/admin/export/students?format=${format}&token=${token}`;
+    if (studentDeptFilter) {
+      url += `&department=${encodeURIComponent(studentDeptFilter)}`;
+    }
+    if (specificStudentIds && specificStudentIds.length > 0) {
+      url += `&student_ids=${specificStudentIds.join(',')}`;
+    }
+    window.open(url, '_blank');
+    showNotice('success', `Initiated ${format.toUpperCase()} export for student data.`);
+  };
+
 
   // ==========================================
   // 4. QUESTION HANDLERS (SECTIONS 7, 16, 24)
@@ -1364,65 +1439,71 @@ export const AdminDashboard: React.FC = () => {
                   return (
                     <div
                       key={d.id}
-                      className={`bg-slate-900 border rounded-2xl p-5 shadow-lg flex flex-col justify-between transition-all ${
+                      className={`bg-white border rounded-2xl p-5 shadow-xs hover:shadow-md flex flex-col justify-between transition-all duration-200 ${
                         isAssigned
-                          ? 'border-amber-500/50 bg-slate-900/90 ring-1 ring-amber-500/30'
+                          ? 'border-amber-300 bg-amber-50/40 ring-1 ring-amber-400/40'
                           : isSelected
-                          ? 'border-sky-500/60 ring-1 ring-sky-500/30'
-                          : 'border-slate-200 hover:border-slate-200'
+                          ? 'border-blue-500 bg-[#F0F6FF] ring-2 ring-blue-500/20'
+                          : 'border-slate-200 hover:border-blue-300'
                       }`}
                     >
                       <div>
+                        {/* Header Badges: Short Code Badge & Active Status */}
                         <div className="flex items-center justify-between gap-2 mb-3">
-                          <span className="px-2.5 py-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-lg text-xs font-mono font-bold">
+                          <span className="px-2.5 py-1 bg-blue-50 text-blue-700 border border-blue-200/80 rounded-lg text-xs font-mono font-bold tracking-wider">
                             {d.code || 'DEPT'}
                           </span>
-                          <div className="flex items-center space-x-1.5">
+                          <div className="flex items-center space-x-1.5 flex-wrap justify-end gap-y-1">
                             {isAssigned && (
-                              <span className="px-2 py-0.5 bg-amber-500/20 text-amber-300 border border-amber-500/30 rounded text-[10px] font-bold">
+                              <span className="px-2 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-md text-[10px] font-bold">
                                 Your Department
                               </span>
                             )}
-                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                              d.is_active ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-slate-800 text-slate-400'
+                            <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold border ${
+                              d.is_active
+                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                : 'bg-slate-100 text-slate-600 border-slate-200'
                             }`}>
+                              <span className={`w-1.5 h-1.5 rounded-full ${d.is_active ? 'bg-emerald-500' : 'bg-slate-400'}`} />
                               {d.is_active ? 'Active' : 'Inactive'}
                             </span>
                           </div>
                         </div>
 
-                        <h4 className="text-base font-bold text-slate-900 leading-snug mb-4">
+                        {/* Full Department Name Prominently Displayed (No truncation, natural wrap) */}
+                        <h4 className="text-base sm:text-lg font-bold text-[#1E293B] leading-snug tracking-tight mb-4 min-h-[3.25rem] flex items-center">
                           {d.name}
                         </h4>
 
-                        {/* Live Metrics Grid from GET /api/departments/stats */}
+                        {/* Live Metrics Grid from GET /api/departments/stats - Light Cards */}
                         <div className="grid grid-cols-2 gap-2.5 mb-5">
-                          <div className="bg-slate-50 border border-slate-200 rounded-xl p-2.5">
-                            <span className="text-[10px] text-slate-400 block font-medium">Students</span>
-                            <span className="text-lg font-bold text-slate-900">{d.students_count}</span>
+                          <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-3 transition-colors">
+                            <span className="text-[11px] text-slate-500 block font-medium">Students</span>
+                            <span className="text-xl font-bold text-[#1E293B] mt-0.5 block">{d.students_count}</span>
                           </div>
-                          <div className="bg-slate-50 border border-slate-200 rounded-xl p-2.5">
-                            <span className="text-[10px] text-slate-400 block font-medium">Active Subjects</span>
-                            <span className="text-lg font-bold text-indigo-400">{d.active_subjects_count}</span>
+                          <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-3 transition-colors">
+                            <span className="text-[11px] text-slate-500 block font-medium">Active Subjects</span>
+                            <span className="text-xl font-bold text-indigo-700 mt-0.5 block">{d.active_subjects_count}</span>
                           </div>
-                          <div className="bg-slate-50 border border-slate-200 rounded-xl p-2.5">
-                            <span className="text-[10px] text-slate-400 block font-medium">Total Exams</span>
-                            <span className="text-lg font-bold text-purple-400">{d.exams_count}</span>
+                          <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-3 transition-colors">
+                            <span className="text-[11px] text-slate-500 block font-medium">Total Exams</span>
+                            <span className="text-xl font-bold text-purple-700 mt-0.5 block">{d.exams_count}</span>
                           </div>
-                          <div className="bg-slate-50 border border-slate-200 rounded-xl p-2.5">
-                            <span className="text-[10px] text-slate-400 block font-medium">Active Exams</span>
-                            <span className="text-lg font-bold text-emerald-400">{d.active_exams_count}</span>
+                          <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-3 transition-colors">
+                            <span className="text-[11px] text-slate-500 block font-medium">Active Exams</span>
+                            <span className="text-xl font-bold text-emerald-700 mt-0.5 block">{d.active_exams_count}</span>
                           </div>
                         </div>
                       </div>
 
+                      {/* Manage Department Action Button */}
                       <button
                         onClick={() => handleManageDepartment(d)}
                         disabled={isForbidden}
-                        className={`w-full py-2.5 px-4 rounded-xl text-xs font-bold flex items-center justify-center space-x-2 transition-all ${
+                        className={`w-full py-2.5 px-4 rounded-xl text-xs font-bold flex items-center justify-center space-x-2 transition-all cursor-pointer ${
                           isForbidden
-                            ? 'bg-slate-800/50 text-slate-600 cursor-not-allowed'
-                            : 'bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-sky-600/20'
+                            ? 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
+                            : 'bg-blue-600 hover:bg-blue-700 text-white shadow-xs hover:shadow-md active:scale-[0.99]'
                         }`}
                       >
                         {isForbidden ? (
@@ -1606,23 +1687,82 @@ export const AdminDashboard: React.FC = () => {
                 <p className="text-xs text-slate-400">Manage enrolled students, unique roll numbers, and login status</p>
               </div>
 
-              <div className="flex items-center space-x-3">
+              <div className="flex items-center flex-wrap gap-2.5">
+                {/* Download Student Data Button (Excel / CSV) */}
+                <button
+                  onClick={() => setShowExportOptionsModal(true)}
+                  className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 transition-colors shadow-xs cursor-pointer"
+                  title="Export student records and examination results as Excel or CSV"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>Download Student Data</span>
+                </button>
+
+                {/* Bulk Import */}
                 <button
                   onClick={openBulkImportModal}
-                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold flex items-center space-x-1.5 transition-colors border border-slate-200"
+                  className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold flex items-center space-x-1.5 transition-colors border border-slate-200 cursor-pointer"
                 >
                   <UploadCloud className="w-4 h-4 text-emerald-400" />
-                  <span>Bulk Import (CSV / XLSX / PDF)</span>
+                  <span>Bulk Import</span>
                 </button>
+
+                {/* Add Student */}
                 <button
                   onClick={openAddStudentModal}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 transition-colors"
+                  className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 transition-colors cursor-pointer"
                 >
                   <UserPlus className="w-4 h-4" />
                   <span>+ Add Student</span>
                 </button>
+
+                {/* Multi-Delete Action when 1 or more students are checked */}
+                {selectedStudentIds.length > 0 && (
+                  <button
+                    onClick={handleOpenDeleteMultipleStudents}
+                    className="px-3.5 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 transition-all shadow-sm cursor-pointer animate-pulse"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span>Delete Selected ({selectedStudentIds.length})</span>
+                  </button>
+                )}
               </div>
             </div>
+
+            {/* Selection Banner if students are selected */}
+            {selectedStudentIds.length > 0 && (
+              <div className="bg-rose-50 border border-rose-200 rounded-2xl p-3.5 flex flex-wrap items-center justify-between gap-3 text-xs text-rose-900 shadow-xs">
+                <div className="flex items-center space-x-2">
+                  <AlertTriangle className="w-4 h-4 text-rose-600" />
+                  <span className="font-bold">
+                    {selectedStudentIds.length} student{selectedStudentIds.length > 1 ? 's' : ''} selected for management
+                  </span>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <button
+                    onClick={() => handleDownloadStudentData('xlsx', selectedStudentIds)}
+                    className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-xl text-xs font-semibold flex items-center space-x-1.5 shadow-xs cursor-pointer"
+                    title="Export backup of selected students"
+                  >
+                    <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>Export Selected (XLSX)</span>
+                  </button>
+                  <button
+                    onClick={handleOpenDeleteMultipleStudents}
+                    className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 shadow-xs cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete Selected ({selectedStudentIds.length})</span>
+                  </button>
+                  <button
+                    onClick={() => setSelectedStudentIds([])}
+                    className="px-2.5 py-1 text-slate-600 hover:text-slate-900 font-semibold cursor-pointer"
+                  >
+                    Deselect All
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Filter Bar */}
             <div className="bg-white border border-slate-200 rounded-2xl p-4 flex flex-wrap items-center gap-4">
@@ -1633,14 +1773,14 @@ export const AdminDashboard: React.FC = () => {
                   placeholder="Search by Roll No or Name..."
                   value={studentSearch}
                   onChange={(e) => setStudentSearch(e.target.value)}
-                  className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-500"
+                  className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-blue-500"
                 />
               </div>
 
               <select
                 value={studentDeptFilter}
                 onChange={(e) => setStudentDeptFilter(e.target.value)}
-                className="py-2 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-300 focus:outline-none"
+                className="py-2 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 focus:outline-none"
               >
                 <option value="">All Departments</option>
                 {departments.map((d) => (
@@ -1650,11 +1790,44 @@ export const AdminDashboard: React.FC = () => {
             </div>
 
             {/* Students Table */}
-            <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xl">
+            <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xs">
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs">
-                  <thead className="bg-slate-950 border-b border-slate-200 text-slate-400 font-semibold uppercase tracking-wider">
+                  <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold uppercase tracking-wider">
                     <tr>
+                      <th className="py-3.5 px-3 w-10 text-center">
+                        <input
+                          type="checkbox"
+                          checked={
+                            studentsList.filter((st) => {
+                              const matchSearch = !studentSearch || st.enrollment_no.toLowerCase().includes(studentSearch.toLowerCase()) || st.name.toLowerCase().includes(studentSearch.toLowerCase());
+                              const matchDept = !studentDeptFilter || st.department === studentDeptFilter;
+                              return matchSearch && matchDept;
+                            }).length > 0 &&
+                            studentsList.filter((st) => {
+                              const matchSearch = !studentSearch || st.enrollment_no.toLowerCase().includes(studentSearch.toLowerCase()) || st.name.toLowerCase().includes(studentSearch.toLowerCase());
+                              const matchDept = !studentDeptFilter || st.department === studentDeptFilter;
+                              return matchSearch && matchDept;
+                            }).every(st => selectedStudentIds.includes(st.id))
+                          }
+                          onChange={() => {
+                            const filtered = studentsList.filter((st) => {
+                              const matchSearch = !studentSearch || st.enrollment_no.toLowerCase().includes(studentSearch.toLowerCase()) || st.name.toLowerCase().includes(studentSearch.toLowerCase());
+                              const matchDept = !studentDeptFilter || st.department === studentDeptFilter;
+                              return matchSearch && matchDept;
+                            });
+                            const filteredIds = filtered.map(s => s.id);
+                            const allSelected = filteredIds.length > 0 && filteredIds.every(id => selectedStudentIds.includes(id));
+                            if (allSelected) {
+                              setSelectedStudentIds(prev => prev.filter(id => !filteredIds.includes(id)));
+                            } else {
+                              setSelectedStudentIds(prev => Array.from(new Set([...prev, ...filteredIds])));
+                            }
+                          }}
+                          className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                          title="Select all filtered students"
+                        />
+                      </th>
                       <th className="py-3.5 px-4">Roll / Enrollment No</th>
                       <th className="py-3.5 px-4">Student Name</th>
                       <th className="py-3.5 px-4">Gender</th>
@@ -1664,7 +1837,7 @@ export const AdminDashboard: React.FC = () => {
                       <th className="py-3.5 px-4 text-right">Actions</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-800/60">
+                  <tbody className="divide-y divide-slate-100">
                     {studentsList
                       .filter((st) => {
                         const matchSearch = !studentSearch || st.enrollment_no.toLowerCase().includes(studentSearch.toLowerCase()) || st.name.toLowerCase().includes(studentSearch.toLowerCase());
@@ -1672,23 +1845,31 @@ export const AdminDashboard: React.FC = () => {
                         return matchSearch && matchDept;
                       })
                       .map((st) => (
-                        <tr key={st.id} className="hover:bg-slate-800/30 transition-colors">
+                        <tr key={st.id} className={`transition-colors ${selectedStudentIds.includes(st.id) ? 'bg-blue-50/40' : 'hover:bg-slate-50/60'}`}>
+                          <td className="py-3.5 px-3 text-center">
+                            <input
+                              type="checkbox"
+                              checked={selectedStudentIds.includes(st.id)}
+                              onChange={() => toggleSelectStudent(st.id)}
+                              className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                            />
+                          </td>
                           <td className="py-3.5 px-4 font-mono font-bold text-blue-600">{st.enrollment_no}</td>
-                          <td className="py-3.5 px-4 font-medium text-white">{st.name}</td>
-                          <td className="py-3.5 px-4 text-slate-400">{st.gender || '-'}</td>
-                          <td className="py-3.5 px-4 text-slate-300">{st.department}</td>
-                          <td className="py-3.5 px-4 text-slate-400">
+                          <td className="py-3.5 px-4 font-medium text-slate-900">{st.name}</td>
+                          <td className="py-3.5 px-4 text-slate-500">{st.gender || '-'}</td>
+                          <td className="py-3.5 px-4 text-slate-700">{st.department}</td>
+                          <td className="py-3.5 px-4 text-slate-500">
                             {st.program || 'UG'} • {st.year || '1st Year'} • {st.semester || 'Sem 1'}
                           </td>
                           <td className="py-3.5 px-4">
                             <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${st.is_active
-                                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                                : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
+                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                : 'bg-rose-50 text-rose-700 border-rose-200'
                               }`}>
                               {st.is_active ? 'Active' : 'Inactive'}
                             </span>
                           </td>
-                          <td className="py-3.5 px-4 text-right space-x-2">
+                          <td className="py-3.5 px-4 text-right space-x-1.5 whitespace-nowrap">
                             <button
                               onClick={() => {
                                 setEditingStudent(st);
@@ -1702,20 +1883,27 @@ export const AdminDashboard: React.FC = () => {
                                 setStFormPassword('');
                                 setShowAddStudentModal(true);
                               }}
-                              className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors"
+                              className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
                               title="Edit"
                             >
                               <Edit3 className="w-4 h-4" />
                             </button>
                             <button
                               onClick={() => handleToggleStudentStatus(st)}
-                              className={`p-1.5 rounded-lg transition-colors ${st.is_active
-                                  ? 'text-slate-400 hover:text-amber-400 hover:bg-amber-500/10'
-                                  : 'text-emerald-400 hover:bg-emerald-500/10'
+                              className={`p-1.5 rounded-lg transition-colors cursor-pointer ${st.is_active
+                                  ? 'text-slate-500 hover:text-amber-600 hover:bg-amber-50'
+                                  : 'text-emerald-600 hover:bg-emerald-50'
                                 }`}
                               title={st.is_active ? 'Deactivate' : 'Activate'}
                             >
                               <Power className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => handleOpenDeleteSingleStudent(st)}
+                              className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                              title="Delete Student Safely"
+                            >
+                              <Trash2 className="w-4 h-4" />
                             </button>
                           </td>
                         </tr>
@@ -2910,6 +3098,212 @@ export const AdminDashboard: React.FC = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* MODAL: DOWNLOAD STUDENT DATA (EXCEL & CSV)                */}
+      {/* ========================================================= */}
+      {showExportOptionsModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-md w-full p-6 space-y-5 shadow-2xl">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200">
+              <h4 className="text-base font-bold text-slate-900 flex items-center space-x-2">
+                <Download className="w-5 h-5 text-emerald-600" />
+                <span>Download Student Assessment Data</span>
+              </h4>
+              <button
+                onClick={() => setShowExportOptionsModal(false)}
+                className="text-slate-400 hover:text-slate-700 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs text-slate-600">
+              <p>
+                Download institutional student assessment records including enrollment details, exam titles, marks obtained, percentages, and pass/fail statuses.
+              </p>
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-1.5 text-[11px]">
+                <p className="font-semibold text-slate-800">Fields included in export:</p>
+                <p className="text-slate-500">
+                  Student Name • Enrollment Number • Department • Program • Year • Semester • Exam Name • Marks Obtained • Total Marks • Percentage • Result • Exam Completion Date
+                </p>
+                <p className="text-slate-400 text-[10px] pt-1">
+                  * Each completed attempt is listed on an individual row. Students without completed attempts include enrollment details with blank result fields.
+                </p>
+              </div>
+
+              {studentDeptFilter && (
+                <div className="bg-blue-50 border border-blue-200 rounded-xl p-2.5 text-[11px] text-blue-800">
+                  Filtering by: <span className="font-bold">{studentDeptFilter}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-2.5 pt-1">
+              <button
+                onClick={() => {
+                  handleDownloadStudentData('xlsx');
+                  setShowExportOptionsModal(false);
+                }}
+                className="w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center justify-center space-x-2 shadow-xs transition-colors cursor-pointer"
+              >
+                <FileSpreadsheet className="w-4 h-4" />
+                <span>Download Excel Workbook (.xlsx)</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  handleDownloadStudentData('csv');
+                  setShowExportOptionsModal(false);
+                }}
+                className="w-full py-3 px-4 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-bold flex items-center justify-center space-x-2 shadow-xs transition-colors cursor-pointer"
+              >
+                <Download className="w-4 h-4" />
+                <span>Download Tabular CSV (.csv)</span>
+              </button>
+
+              <button
+                onClick={() => setShowExportOptionsModal(false)}
+                className="w-full py-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl text-xs font-semibold transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* MODAL: SAFE STUDENT DELETION CONFIRMATION                 */}
+      {/* ========================================================= */}
+      {showDeleteStudentModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-rose-200 rounded-3xl max-w-lg w-full p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between pb-3 border-b border-rose-100">
+              <div className="flex items-center space-x-2 text-rose-600">
+                <AlertTriangle className="w-5 h-5" />
+                <h4 className="text-base font-bold text-slate-900">
+                  {studentToDelete
+                    ? `Confirm Deletion: ${studentToDelete.name} (${studentToDelete.enrollment_no})`
+                    : `Confirm Student Deletion (${selectedStudentIds.length} Student${selectedStudentIds.length > 1 ? 's' : ''})`
+                  }
+                </h4>
+              </div>
+              <button
+                onClick={() => {
+                  setShowDeleteStudentModal(false);
+                  setStudentToDelete(null);
+                }}
+                className="text-slate-400 hover:text-slate-700 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <p className="text-slate-700">
+                You are requesting to permanently delete <strong className="text-rose-600 font-bold">{selectedStudentIds.length}</strong> student record{selectedStudentIds.length > 1 ? 's' : ''}:
+              </p>
+
+              {/* Student(s) Summary List */}
+              <div className="max-h-36 overflow-y-auto bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-1.5">
+                {studentsList
+                  .filter(st => selectedStudentIds.includes(st.id))
+                  .map(st => (
+                    <div key={st.id} className="flex items-center justify-between py-1 border-b border-slate-100 last:border-b-0">
+                      <div>
+                        <span className="font-bold text-slate-900">{st.name}</span>
+                        <span className="text-slate-500 font-mono text-[11px] ml-2">({st.enrollment_no})</span>
+                      </div>
+                      <span className="text-[11px] text-blue-600 bg-blue-50 px-2 py-0.5 rounded-md font-semibold">
+                        {st.department}
+                      </span>
+                    </div>
+                  ))}
+              </div>
+
+              {/* Data Retention & Impact Notice */}
+              <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-1 text-amber-900 text-[11px]">
+                <p className="font-bold flex items-center gap-1.5 text-amber-800">
+                  <ShieldAlert className="w-4 h-4 text-amber-600" />
+                  <span>Retention Rules & Integrity Protection</span>
+                </p>
+                <p className="leading-relaxed">
+                  Deleting these student records will safely remove their student profile, active & historical examination attempts, submitted answer records, security logs, and exam assignment mappings.
+                </p>
+                <p className="text-amber-800 font-medium pt-1">
+                  ✓ Unrelated students, question banks, subjects, examinations, departments, and system configurations are fully preserved.
+                </p>
+              </div>
+
+              {/* Recommended & Required Backup Download Step */}
+              <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3.5 space-y-2">
+                <div className="flex items-center space-x-1.5 text-emerald-800 font-bold">
+                  <Download className="w-4 h-4 text-emerald-600" />
+                  <span>Recommended & Required: Export Backup Before Deletion</span>
+                </div>
+                <p className="text-emerald-700 text-[11px] leading-relaxed">
+                  Download an official backup copy of these students and their assessment results before completing the deletion.
+                </p>
+                <div className="flex items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => handleDownloadStudentData('xlsx', selectedStudentIds)}
+                    className="flex-1 py-1.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[11px] font-bold flex items-center justify-center space-x-1 shadow-xs cursor-pointer"
+                  >
+                    <FileSpreadsheet className="w-3.5 h-3.5" />
+                    <span>Download Backup (Excel)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDownloadStudentData('csv', selectedStudentIds)}
+                    className="flex-1 py-1.5 px-3 bg-slate-800 hover:bg-slate-900 text-white rounded-lg text-[11px] font-bold flex items-center justify-center space-x-1 shadow-xs cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Download Backup (CSV)</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Confirmation Checkbox */}
+              <label className="flex items-start space-x-2 pt-1 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={deleteConfirmedBackup}
+                  onChange={(e) => setDeleteConfirmedBackup(e.target.checked)}
+                  className="mt-0.5 w-4 h-4 rounded border-slate-300 text-rose-600 focus:ring-rose-500 cursor-pointer"
+                />
+                <span className="text-slate-700 text-[11px] leading-snug">
+                  I confirm that I have reviewed the student records, downloaded or verified backup exports, and authorize permanent deletion of the selected {selectedStudentIds.length} student record{selectedStudentIds.length > 1 ? 's' : ''}.
+                </span>
+              </label>
+            </div>
+
+            <div className="flex items-center space-x-3 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowDeleteStudentModal(false);
+                  setStudentToDelete(null);
+                  setDeleteConfirmedBackup(false);
+                }}
+                className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={!deleteConfirmedBackup || deletingStudents}
+                onClick={handleConfirmDeleteStudents}
+                className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-700 disabled:bg-rose-300 disabled:cursor-not-allowed text-white rounded-xl text-xs font-bold flex items-center justify-center space-x-1.5 shadow-xs cursor-pointer transition-colors"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>{deletingStudents ? 'Deleting...' : `Confirm & Delete (${selectedStudentIds.length})`}</span>
+              </button>
+            </div>
           </div>
         </div>
       )}

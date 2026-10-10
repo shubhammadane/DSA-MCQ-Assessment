@@ -23,7 +23,8 @@ from app.auth import (
     hash_password,
     verify_password,
     CurrentUser,
-    get_optional_admin
+    get_optional_admin,
+    resolve_admin_user
 )
 from app.questions_data import FIXED_QUESTIONS, QUESTIONS_BY_ID
 
@@ -711,6 +712,136 @@ def toggle_student_status(student_id: int, status_in: schemas.QuestionStatusUpda
     return student
 
 
+@router.delete("/admin/students/{student_id}")
+def admin_delete_student(
+    student_id: int,
+    admin: CurrentUser = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    CRITICAL REQUIREMENT: SAFE STUDENT DELETION
+    Safely delete a student and their dependent records:
+    Exam assignments, answers, security logs, and attempts.
+    Preserves other students, questions, subjects, exams, departments, and system configuration.
+    Enforces HOD authorization restrictions.
+    """
+    student = db.query(models.Student).filter(models.Student.id == student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found.")
+
+    if admin.is_hod:
+        if student.department_id != admin.department_id and student.department != admin.department_name:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: Cannot delete student belonging to another department."
+            )
+
+    try:
+        # 1. Identify all attempt IDs for this student
+        attempts = db.query(models.Attempt).filter(models.Attempt.student_id == student_id).all()
+        attempt_ids = [a.id for a in attempts]
+
+        # 2. Delete student answers and security logs belonging to these attempts
+        if attempt_ids:
+            db.query(models.StudentAnswer).filter(models.StudentAnswer.attempt_id.in_(attempt_ids)).delete(synchronize_session=False)
+            db.query(models.ExamSecurityLog).filter(models.ExamSecurityLog.attempt_id.in_(attempt_ids)).delete(synchronize_session=False)
+
+        # 3. Delete any remaining security logs by student_id
+        db.query(models.ExamSecurityLog).filter(models.ExamSecurityLog.student_id == student_id).delete(synchronize_session=False)
+
+        # 4. Delete exam assignment mappings
+        db.query(models.ExamStudent).filter(models.ExamStudent.student_id == student_id).delete(synchronize_session=False)
+
+        # 5. Delete attempts
+        if attempt_ids:
+            db.query(models.Attempt).filter(models.Attempt.student_id == student_id).delete(synchronize_session=False)
+
+        # 6. Delete student
+        student_name = student.name
+        enrollment_no = student.enrollment_no
+        db.delete(student)
+        db.commit()
+
+        return {
+            "status": "success",
+            "message": f"Student '{student_name}' ({enrollment_no}) and dependent records safely deleted.",
+            "student_id": student_id,
+            "deleted_attempts_count": len(attempt_ids)
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to safely delete student: {str(e)}"
+        )
+
+
+@router.post("/admin/students/bulk-delete", response_model=schemas.BulkDeleteStudentsResponse)
+def admin_bulk_delete_students(
+    req: schemas.BulkDeleteStudentsRequest,
+    admin: CurrentUser = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    Safely delete multiple selected students and their dependent records.
+    Enforces HOD authorization: if any selected student belongs to another department,
+    the entire operation is rejected with 403 Forbidden.
+    """
+    if not req.student_ids:
+        raise HTTPException(status_code=400, detail="No student IDs provided for deletion.")
+
+    students = db.query(models.Student).filter(models.Student.id.in_(req.student_ids)).all()
+    if not students:
+        raise HTTPException(status_code=404, detail="No matching students found to delete.")
+
+    if admin.is_hod:
+        for st in students:
+            if st.department_id != admin.department_id and st.department != admin.department_name:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Access denied: Student '{st.name}' ({st.enrollment_no}) belongs to another department."
+                )
+
+    try:
+        student_ids = [st.id for st in students]
+
+        # 1. Collect all attempt IDs
+        attempts = db.query(models.Attempt).filter(models.Attempt.student_id.in_(student_ids)).all()
+        attempt_ids = [a.id for a in attempts]
+
+        # 2. Delete answers and security logs
+        if attempt_ids:
+            db.query(models.StudentAnswer).filter(models.StudentAnswer.attempt_id.in_(attempt_ids)).delete(synchronize_session=False)
+            db.query(models.ExamSecurityLog).filter(models.ExamSecurityLog.attempt_id.in_(attempt_ids)).delete(synchronize_session=False)
+
+        # 3. Delete any remaining security logs by student_id
+        db.query(models.ExamSecurityLog).filter(models.ExamSecurityLog.student_id.in_(student_ids)).delete(synchronize_session=False)
+
+        # 4. Delete exam assignments
+        db.query(models.ExamStudent).filter(models.ExamStudent.student_id.in_(student_ids)).delete(synchronize_session=False)
+
+        # 5. Delete attempts
+        if attempt_ids:
+            db.query(models.Attempt).filter(models.Attempt.student_id.in_(student_ids)).delete(synchronize_session=False)
+
+        # 6. Delete students
+        deleted_count = db.query(models.Student).filter(models.Student.id.in_(student_ids)).delete(synchronize_session=False)
+        db.commit()
+
+        return schemas.BulkDeleteStudentsResponse(
+            status="success",
+            message=f"Successfully deleted {deleted_count} student(s) and their dependent assessment records.",
+            deleted_count=deleted_count,
+            student_ids=student_ids
+        )
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to safely delete selected students: {str(e)}"
+        )
+
+
 @router.post("/admin/students/bulk-import")
 async def bulk_import_students(
     file: UploadFile = File(...),
@@ -1076,28 +1207,44 @@ def create_exam(exam_in: schemas.ExamCreate, admin: CurrentUser = Depends(get_cu
     if not title:
         raise HTTPException(status_code=400, detail="Exam title is required.")
 
+    # 1. Department Validation
     if admin.is_hod:
         if exam_in.department_id and exam_in.department_id != admin.department_id:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Cannot create exam for another department.")
-        exam_in.department_id = admin.department_id
+        dept_id = admin.department_id
         dept_name = admin.department_name
     else:
-        dept_name = None
-        if exam_in.department_id:
-            dept = db.query(models.Department).filter(models.Department.id == exam_in.department_id).first()
-            dept_name = dept.name if dept else None
+        if not exam_in.department_id:
+            raise HTTPException(status_code=400, detail="Department is required. Please select an active department.")
+        dept = db.query(models.Department).filter(models.Department.id == exam_in.department_id).first()
+        if not dept:
+            raise HTTPException(status_code=400, detail="Selected department not found.")
+        if not dept.is_active:
+            raise HTTPException(status_code=400, detail="Selected department is inactive.")
+        dept_id = dept.id
+        dept_name = dept.name
 
-    subj_name = None
-    if exam_in.subject_id:
-        subj = db.query(models.Subject).filter(models.Subject.id == exam_in.subject_id).first()
-        subj_name = subj.name if subj else None
-        if not dept_name and subj and subj.department_name:
-            dept_name = subj.department_name
-            if not exam_in.department_id:
-                exam_in.department_id = subj.department_id
+    exam_in.department_id = dept_id
+
+    # 2. Subject Validation & Department Matching
+    if not exam_in.subject_id:
+        raise HTTPException(status_code=400, detail="Subject is required. Please select an active subject belonging to the selected department.")
+
+    subj = db.query(models.Subject).filter(models.Subject.id == exam_in.subject_id).first()
+    if not subj:
+        raise HTTPException(status_code=400, detail="Selected subject not found.")
+    if not subj.is_active:
+        raise HTTPException(status_code=400, detail="Selected subject is inactive.")
+    if subj.department_id != dept_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Selected subject '{subj.name}' does not belong to the selected department '{dept_name}'."
+        )
+
+    subj_name = subj.name
 
     # Validate active questions available in subject bank for random selection
-    if exam_in.selection_mode == "random" and exam_in.subject_id:
+    if exam_in.selection_mode == "random":
         q_count = db.query(models.Question).filter(
             models.Question.subject_id == exam_in.subject_id,
             models.Question.is_active == True
@@ -1105,7 +1252,7 @@ def create_exam(exam_in: schemas.ExamCreate, admin: CurrentUser = Depends(get_cu
         if q_count < exam_in.total_questions:
             raise HTTPException(
                 status_code=400,
-                detail=f"Only {q_count} active questions are available for this subject. Please add more questions."
+                detail=f"Only {q_count} active questions are available for this subject. Please add more questions or reduce question count."
             )
 
     prog_name = None
@@ -1128,7 +1275,7 @@ def create_exam(exam_in: schemas.ExamCreate, admin: CurrentUser = Depends(get_cu
     exam = models.Exam(
         title=title,
         code=exam_in.code.strip() if exam_in.code else None,
-        department_id=exam_in.department_id,
+        department_id=dept_id,
         department_name=dept_name,
         program_id=exam_in.program_id,
         program_name=prog_name,
@@ -1136,7 +1283,7 @@ def create_exam(exam_in: schemas.ExamCreate, admin: CurrentUser = Depends(get_cu
         year_name=year_name,
         semester_id=exam_in.semester_id,
         semester_name=sem_name,
-        subject_id=exam_in.subject_id,
+        subject_id=subj.id,
         subject_name=subj_name,
         start_date=exam_in.start_date,
         start_time=exam_in.start_time,
@@ -1182,18 +1329,36 @@ def update_exam(exam_id: int, exam_in: schemas.ExamUpdate, admin: CurrentUser = 
         if exam_in.department_id and exam_in.department_id != admin.department_id:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Cannot transfer exam to another department.")
 
-    if exam_in.title is not None:
-        exam.title = exam_in.title.strip()
-    if exam_in.code is not None:
-        exam.code = exam_in.code.strip()
+    target_dept_id = admin.department_id if admin.is_hod else (exam_in.department_id if exam_in.department_id is not None else exam.department_id)
+    target_subj_id = exam_in.subject_id if exam_in.subject_id is not None else exam.subject_id
+
+    # Validate department update if requested (Super Admin only)
     if exam_in.department_id is not None and not admin.is_hod:
         dept = db.query(models.Department).filter(models.Department.id == exam_in.department_id).first()
-        exam.department_id = dept.id if dept else None
-        exam.department_name = dept.name if dept else None
+        if not dept:
+            raise HTTPException(status_code=400, detail="Selected department not found.")
+        exam.department_id = dept.id
+        exam.department_name = dept.name
+
+    # Validate subject update if requested
     if exam_in.subject_id is not None:
         subj = db.query(models.Subject).filter(models.Subject.id == exam_in.subject_id).first()
-        exam.subject_id = subj.id if subj else None
-        exam.subject_name = subj.name if subj else None
+        if not subj:
+            raise HTTPException(status_code=400, detail="Selected subject not found.")
+        if not subj.is_active:
+            raise HTTPException(status_code=400, detail="Selected subject is inactive.")
+        if target_dept_id and subj.department_id != target_dept_id:
+            raise HTTPException(status_code=400, detail="Selected subject does not belong to the selected department.")
+        exam.subject_id = subj.id
+        exam.subject_name = subj.name
+    elif exam_in.department_id is not None and exam.subject_id:
+        # Check that existing subject matches the new department
+        subj = db.query(models.Subject).filter(models.Subject.id == exam.subject_id).first()
+        if subj and target_dept_id and subj.department_id != target_dept_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Existing subject does not belong to the newly selected department. Please update the subject association."
+            )
     if exam_in.program_id is not None:
         prog = db.query(models.Program).filter(models.Program.id == exam_in.program_id).first()
         exam.program_id = prog.id if prog else None
@@ -1735,8 +1900,11 @@ def start_attempt(student_data: schemas.StudentCreate, db: Session = Depends(get
         db.commit()
         db.refresh(student)
     else:
-        student.name = name
-        student.department = dept
+        # Protect existing verified student profile from arbitrary browser overwrite
+        if not student.name or not student.name.strip():
+            student.name = name
+        if not student.department or not student.department.strip():
+            student.department = dept
         if not student.password_hash:
             student.password_hash = default_pwd_hash
         db.commit()
@@ -2509,11 +2677,212 @@ def update_assessment_settings(settings_in: schemas.AssessmentSettingsUpdate, ad
 
 
 # =========================================================================
-# 13. EXPORTS (EXCEL & CSV)
+# 13. EXPORTS (EXCEL & CSV) - STUDENT DATA EXPORT
 # =========================================================================
 
+def get_student_export_dataset(
+    db: Session,
+    admin: CurrentUser,
+    department: Optional[str] = None,
+    student_ids: Optional[str] = None
+):
+    query = db.query(models.Student)
+
+    # 1. HOD Department isolation
+    if admin.is_hod and admin.department_id:
+        query = query.filter(
+            or_(
+                models.Student.department_id == admin.department_id,
+                models.Student.department.ilike(admin.department_name or "")
+            )
+        )
+    elif department and department.strip() and department.strip() != "All Departments":
+        dept_val = department.strip()
+        query = query.filter(
+            or_(
+                models.Student.department == dept_val,
+                models.Student.department.ilike(dept_val)
+            )
+        )
+
+    # 2. Optional student_ids filter (for selected student backup)
+    if student_ids and student_ids.strip():
+        parsed_ids = [int(x.strip()) for x in student_ids.split(",") if x.strip().isdigit()]
+        if parsed_ids:
+            query = query.filter(models.Student.id.in_(parsed_ids))
+
+    students = query.order_by(models.Student.department.asc(), models.Student.enrollment_no.asc()).all()
+
+    headers = [
+        "Student Name",
+        "Enrollment Number",
+        "Department",
+        "Program",
+        "Year",
+        "Semester",
+        "Exam Name",
+        "Marks Obtained",
+        "Total Marks",
+        "Percentage",
+        "Result",
+        "Exam Completion Date"
+    ]
+
+    rows = []
+    for s in students:
+        # Fetch completed exam attempts for this student
+        completed_attempts = (
+            db.query(models.Attempt)
+            .filter(
+                models.Attempt.student_id == s.id,
+                or_(
+                    models.Attempt.status == "completed",
+                    models.Attempt.completed_at != None,
+                    models.Attempt.submitted_at != None
+                )
+            )
+            .order_by(models.Attempt.started_at.asc())
+            .all()
+        )
+
+        if not completed_attempts:
+            # If a student has no completed exam attempt, export student details and leave result fields blank
+            rows.append([
+                s.name,
+                s.enrollment_no,
+                s.department or "",
+                s.program or "",
+                s.year or "",
+                s.semester or "",
+                "",  # Exam Name
+                "",  # Marks Obtained
+                "",  # Total Marks
+                "",  # Percentage
+                "",  # Result
+                ""   # Exam Completion Date
+            ])
+        else:
+            for att in completed_attempts:
+                exam_name = att.exam_title_snapshot or (att.exam.title if att.exam else "DSA Assessment")
+                total_marks = att.exam.total_marks if (att.exam and att.exam.total_marks) else (att.total_questions or 50)
+                marks_obtained = att.score
+                percentage_val = round(att.percentage, 2) if att.percentage is not None else 0.0
+                passing_pct = att.exam.passing_percentage if (att.exam and att.exam.passing_percentage) else 40.0
+                result_status = "Pass" if percentage_val >= passing_pct else "Fail"
+                comp_dt = att.completed_at or att.submitted_at or att.started_at
+                comp_str = comp_dt.strftime("%Y-%m-%d %H:%M:%S") if comp_dt else ""
+
+                rows.append([
+                    s.name,
+                    s.enrollment_no,
+                    s.department or "",
+                    s.program or "",
+                    s.year or "",
+                    s.semester or "",
+                    exam_name,
+                    marks_obtained,
+                    total_marks,
+                    f"{percentage_val}%",
+                    result_status,
+                    comp_str
+                ])
+
+    return headers, rows
+
+
+def generate_excel_stream(headers, rows, sheet_title="Student Data"):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = sheet_title
+
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="1E3A8A", end_color="1E3A8A", fill_type="solid")
+    thin_border = Border(
+        left=Side(style='thin', color='CBD5E1'),
+        right=Side(style='thin', color='CBD5E1'),
+        top=Side(style='thin', color='CBD5E1'),
+        bottom=Side(style='thin', color='CBD5E1')
+    )
+
+    ws.append(headers)
+    for col_num in range(1, len(headers) + 1):
+        cell = ws.cell(row=1, column=col_num)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = thin_border
+    ws.row_dimensions[1].height = 26
+
+    for r_idx, row in enumerate(rows, start=2):
+        ws.append(row)
+        for c_idx in range(1, len(row) + 1):
+            cell = ws.cell(row=r_idx, column=c_idx)
+            cell.border = thin_border
+            if c_idx in (8, 9):  # Marks
+                cell.alignment = Alignment(horizontal="right", vertical="center")
+            elif c_idx in (10, 11, 12):  # Percentage, Result, Date
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    for col in ws.columns:
+        max_len = max(len(str(cell.value or '')) for cell in col)
+        col_letter = openpyxl.utils.get_column_letter(col[0].column)
+        ws.column_dimensions[col_letter].width = max(max_len + 4, 14)
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return output
+
+
+def generate_csv_stream(headers, rows):
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(headers)
+    for row in rows:
+        writer.writerow(row)
+    output.seek(0)
+    return io.BytesIO(output.getvalue().encode("utf-8-sig"))
+
+
+@router.get("/admin/export/students")
+def export_students_dataset(
+    format: str = Query("xlsx"),
+    department: Optional[str] = Query(None),
+    student_ids: Optional[str] = Query(None),
+    admin: CurrentUser = Depends(resolve_admin_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Download student details and completed exam attempts as Excel (.xlsx) or CSV (.csv).
+    """
+    headers, rows = get_student_export_dataset(db, admin, department=department, student_ids=student_ids)
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+
+    if format.lower() == "csv":
+        csv_stream = generate_csv_stream(headers, rows)
+        filename = f"student_data_export_{timestamp}.csv"
+        return StreamingResponse(
+            csv_stream,
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    else:
+        excel_stream = generate_excel_stream(headers, rows, sheet_title="Student Assessment Data")
+        filename = f"student_data_export_{timestamp}.xlsx"
+        return StreamingResponse(
+            excel_stream,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+
+
 @router.get("/admin/export/excel")
-def export_students_excel(type: Optional[str] = Query(None), admin: CurrentUser = Depends(get_current_admin), db: Session = Depends(get_db)):
+def export_students_excel(
+    type: Optional[str] = Query(None),
+    admin: CurrentUser = Depends(resolve_admin_user),
+    db: Session = Depends(get_db)
+):
     query = db.query(models.Student)
     if admin.is_hod and admin.department_id:
         query = query.filter(models.Student.department_id == admin.department_id)
@@ -2571,7 +2940,11 @@ def export_students_excel(type: Optional[str] = Query(None), admin: CurrentUser 
 
 
 @router.get("/admin/export/csv")
-def export_students_csv(type: Optional[str] = Query(None), admin: CurrentUser = Depends(get_current_admin), db: Session = Depends(get_db)):
+def export_students_csv(
+    type: Optional[str] = Query(None),
+    admin: CurrentUser = Depends(resolve_admin_user),
+    db: Session = Depends(get_db)
+):
     query = db.query(models.Student)
     if admin.is_hod and admin.department_id:
         query = query.filter(models.Student.department_id == admin.department_id)
@@ -2621,3 +2994,4 @@ def export_students_csv(type: Optional[str] = Query(None), admin: CurrentUser = 
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
+
