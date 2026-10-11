@@ -5,7 +5,8 @@ import {
   UserCheck, Search, Eye, HelpCircle, Sliders, Plus, Edit3, Power,
   AlertTriangle, X, Shield, RefreshCw, Trash2, BookOpen,
   GraduationCap, Building, Layers, Calendar, UserPlus,
-  UploadCloud, FileSpreadsheet, ShieldAlert, Lock, ArrowRight, ArrowLeft
+  UploadCloud, FileSpreadsheet, ShieldAlert, Lock, ArrowRight, ArrowLeft,
+  Archive, ArchiveRestore
 } from 'lucide-react';
 import api, { API_BASE_URL } from '../services/api';
 import { CollegeBranding } from '../components/CollegeBranding';
@@ -137,6 +138,14 @@ export const AdminDashboard: React.FC = () => {
   const [selectedStudentIdsToAssign, setSelectedStudentIdsToAssign] = useState<number[]>([]);
   const [assignFilterDept, setAssignFilterDept] = useState('');
   const [assignSearch, setAssignSearch] = useState('');
+
+  // Exam Safe Delete & Archive State
+  const [examToDelete, setExamToDelete] = useState<Exam | null>(null);
+  const [showExamDeleteModal, setShowExamDeleteModal] = useState(false);
+  const [examDeleteLoading, setExamDeleteLoading] = useState(false);
+  const [examToArchive, setExamToArchive] = useState<Exam | null>(null);
+  const [showExamArchiveModal, setShowExamArchiveModal] = useState(false);
+  const [examArchiveLoading, setExamArchiveLoading] = useState(false);
 
   // Exam Form State
   const [examFormTitle, setExamFormTitle] = useState('');
@@ -815,7 +824,25 @@ export const AdminDashboard: React.FC = () => {
   // 5. EXAM HANDLERS (SECTIONS 14, 15, 17, 18, 19, 20, 21, 22)
   // ==========================================
 
-  const openCreateExamModal = () => {
+  const handleExamDeptChange = async (newDeptId: number | '') => {
+    setExamFormDeptId(newDeptId);
+    setExamFormSubjectId(''); // Requirement 2: Changing department must clear any invalid previous selection!
+    if (newDeptId) {
+      try {
+        const res = await api.get<Subject[]>('/subjects', {
+          params: { department_id: newDeptId, is_active: true }
+        });
+        setSubjects(prev => {
+          const others = prev.filter(s => s.department_id !== newDeptId);
+          return [...others, ...res.data].sort((a, b) => a.name.localeCompare(b.name));
+        });
+      } catch (err) {
+        console.error('Failed to reload department subjects', err);
+      }
+    }
+  };
+
+  const openCreateExamModal = async () => {
     setEditingExam(null);
     setExamFormTitle('');
     setExamFormCode('');
@@ -825,6 +852,8 @@ export const AdminDashboard: React.FC = () => {
       || (selectedDeptWorkspace?.id)
       || (departments.length > 0 ? departments[0].id : '');
     setExamFormDeptId(initialDeptId);
+    setExamFormSubjectId(''); // Cleared so user makes an explicit valid selection
+
     const initialProgId = programs.length > 0 ? programs[0].id : 1;
     setExamFormProgId(initialProgId);
     const validYears = getFilteredYears(initialProgId);
@@ -834,9 +863,19 @@ export const AdminDashboard: React.FC = () => {
     const initialSemId = validSems.length > 0 ? validSems[0].id : '';
     setExamFormSemId(initialSemId);
 
-    // Filter available subjects for this department
-    const matching = subjects.filter(s => s.department_id === initialDeptId && s.is_active);
-    setExamFormSubjectId(matching.length > 0 ? matching[0].id : (subjects.length > 0 ? subjects[0].id : ''));
+    if (initialDeptId) {
+      try {
+        const res = await api.get<Subject[]>('/subjects', {
+          params: { department_id: initialDeptId, is_active: true }
+        });
+        setSubjects(prev => {
+          const others = prev.filter(s => s.department_id !== initialDeptId);
+          return [...others, ...res.data].sort((a, b) => a.name.localeCompare(b.name));
+        });
+      } catch (err) {
+        console.error('Failed to fetch subjects for department', err);
+      }
+    }
 
     setExamFormDuration(60);
     setExamFormQuestionsCount(25);
@@ -855,6 +894,10 @@ export const AdminDashboard: React.FC = () => {
       showNotice('error', 'Exam Title is required.');
       return;
     }
+    if (!examFormDeptId) {
+      showNotice('error', 'Department is required. Please select a Department for this examination.');
+      return;
+    }
     if (!examFormSubjectId) {
       showNotice('error', 'Subject is required. Please select a Subject for this examination.');
       return;
@@ -865,7 +908,7 @@ export const AdminDashboard: React.FC = () => {
         title: examFormTitle.trim(),
         code: examFormCode.trim() || undefined,
         subject_id: Number(examFormSubjectId),
-        department_id: examFormDeptId ? Number(examFormDeptId) : undefined,
+        department_id: Number(examFormDeptId),
         program_id: examFormProgId ? Number(examFormProgId) : undefined,
         academic_year_id: examFormYearId ? Number(examFormYearId) : undefined,
         semester_id: examFormSemId ? Number(examFormSemId) : undefined,
@@ -882,7 +925,7 @@ export const AdminDashboard: React.FC = () => {
 
       if (editingExam) {
         const res = await api.put(`/admin/exams/${editingExam.id}`, payload);
-        showNotice('success', `Exam '${examFormTitle}' updated.`);
+        showNotice('success', `Exam '${examFormTitle}' updated successfully.`);
         setExams(prev => prev.map(ex => ex.id === editingExam.id ? res.data : ex));
       } else {
         const res = await api.post('/admin/exams', payload);
@@ -896,7 +939,6 @@ export const AdminDashboard: React.FC = () => {
       setExamFormCode('');
       loadExams();
     } catch (err: any) {
-      // Show actual backend error (e.g. active question count validation)
       showNotice('error', err.response?.data?.detail || 'Failed to save exam.');
     }
   };
@@ -909,6 +951,65 @@ export const AdminDashboard: React.FC = () => {
       loadExams();
     } catch (err: any) {
       showNotice('error', err.response?.data?.detail || 'Failed to update exam status.');
+    }
+  };
+
+  // Safe Delete & Archive Examination Handlers
+  const handleOpenDeleteExam = (exam: Exam) => {
+    setExamToDelete(exam);
+    setShowExamDeleteModal(true);
+  };
+
+  const handleConfirmDeleteExam = async () => {
+    if (!examToDelete) return;
+    setExamDeleteLoading(true);
+    try {
+      const res = await api.delete(`/admin/exams/${examToDelete.id}`);
+      showNotice('success', res.data?.message || `Examination '${examToDelete.title}' deleted successfully.`);
+      setExams(prev => prev.filter(e => e.id !== examToDelete.id));
+      setShowExamDeleteModal(false);
+      setExamToDelete(null);
+      loadExams();
+    } catch (err: any) {
+      showNotice('error', err.response?.data?.detail || 'Failed to delete examination.');
+    } finally {
+      setExamDeleteLoading(false);
+    }
+  };
+
+  const handleOpenArchiveExam = (exam: Exam) => {
+    setExamToArchive(exam);
+    setShowExamArchiveModal(true);
+  };
+
+  const handleConfirmArchiveExam = async (examTarget?: Exam) => {
+    const target = examTarget || examToArchive || examToDelete;
+    if (!target) return;
+    setExamArchiveLoading(true);
+    try {
+      const res = await api.post(`/admin/exams/${target.id}/archive`);
+      showNotice('success', res.data?.message || `Examination '${target.title}' archived successfully. Historical attempts and marks are protected.`);
+      setExams(prev => prev.map(e => e.id === target.id ? { ...e, status: 'archived', is_active: false } : e));
+      setShowExamArchiveModal(false);
+      setShowExamDeleteModal(false);
+      setExamToArchive(null);
+      setExamToDelete(null);
+      loadExams();
+    } catch (err: any) {
+      showNotice('error', err.response?.data?.detail || 'Failed to archive examination.');
+    } finally {
+      setExamArchiveLoading(false);
+    }
+  };
+
+  const handleUnarchiveExam = async (exam: Exam) => {
+    try {
+      const res = await api.post(`/admin/exams/${exam.id}/unarchive`);
+      showNotice('success', res.data?.message || `Examination '${exam.title}' restored to draft status.`);
+      setExams(prev => prev.map(e => e.id === exam.id ? { ...e, status: 'draft', is_active: true } : e));
+      loadExams();
+    } catch (err: any) {
+      showNotice('error', err.response?.data?.detail || 'Failed to restore examination.');
     }
   };
 
@@ -1001,22 +1102,17 @@ export const AdminDashboard: React.FC = () => {
     window.open(`${API_BASE_URL}/admin/export/csv?token=${token}`, '_blank');
   };
 
-  // Filtered Subjects for Exam Modal according to selected Department & Academic hierarchy
-  const availableExamSubjects = subjects.filter(s => {
-    if (!s.is_active) return false;
-    if (examFormDeptId && s.department_id !== Number(examFormDeptId)) return false;
-    if (examFormProgId && s.program_id && s.program_id !== Number(examFormProgId)) return false;
-    if (examFormYearId && s.academic_year_id && s.academic_year_id !== Number(examFormYearId)) return false;
-    if (examFormSemId && s.semester_id && s.semester_id !== Number(examFormSemId)) return false;
-    return true;
-  });
-
-  // Fallback subjects if strict academic filter is empty
-  const fallbackDeptSubjects = examFormDeptId
-    ? subjects.filter(s => s.department_id === Number(examFormDeptId) && s.is_active)
-    : subjects.filter(s => s.is_active);
-
-  const displayExamSubjects = availableExamSubjects.length > 0 ? availableExamSubjects : fallbackDeptSubjects;
+  // Filtered Subjects for Exam Modal strictly bounded to selected Department
+  const displayExamSubjects = examFormDeptId
+    ? subjects.filter(s => {
+        if (!s.is_active) return false;
+        if (s.department_id !== Number(examFormDeptId)) return false;
+        if (examFormProgId && s.program_id && s.program_id !== Number(examFormProgId)) return false;
+        if (examFormYearId && s.academic_year_id && s.academic_year_id !== Number(examFormYearId)) return false;
+        if (examFormSemId && s.semester_id && s.semester_id !== Number(examFormSemId)) return false;
+        return true;
+      })
+    : [];
 
   if (loading) {
     return (
@@ -2270,12 +2366,13 @@ export const AdminDashboard: React.FC = () => {
               <select
                 value={examStatusFilter}
                 onChange={(e) => setExamStatusFilter(e.target.value)}
-                className="py-2 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-300 focus:outline-none"
+                className="py-2 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 focus:outline-none"
               >
                 <option value="">All Statuses</option>
                 <option value="published">Published</option>
                 <option value="draft">Draft</option>
                 <option value="closed">Closed</option>
+                <option value="archived">Archived</option>
               </select>
             </div>
 
@@ -2327,29 +2424,57 @@ export const AdminDashboard: React.FC = () => {
                             </td>
                             <td className="py-3.5 px-4 text-slate-400">{ex.attempts_count || 0}</td>
                             <td className="py-3.5 px-4">
-                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border uppercase ${ex.status === 'published'
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border uppercase ${
+                                ex.status === 'published'
                                   ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
                                   : ex.status === 'draft'
                                     ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
-                                    : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
-                                }`}>
+                                    : ex.status === 'archived'
+                                      ? 'bg-purple-500/10 text-purple-400 border-purple-500/20'
+                                      : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
+                              }`}>
                                 {ex.status}
                               </span>
                             </td>
-                            <td className="py-3.5 px-4 text-right space-x-2">
+                            <td className="py-3.5 px-4 text-right space-x-1.5 whitespace-nowrap">
                               <button
                                 onClick={() => openAssignModal(ex)}
-                                className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold transition-colors inline-flex items-center space-x-1"
+                                className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold transition-colors inline-flex items-center space-x-1"
+                                title="Assign Students to Exam"
                               >
                                 <UserCheck className="w-3.5 h-3.5" />
                                 <span>Assign</span>
                               </button>
                               <button
                                 onClick={() => handleToggleExamStatus(ex, ex.status === 'published' ? 'closed' : 'published')}
-                                className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors"
+                                className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors inline-flex items-center"
                                 title={ex.status === 'published' ? 'Close Exam' : 'Publish Exam'}
                               >
                                 <Power className="w-4 h-4" />
+                              </button>
+                              {ex.status === 'archived' ? (
+                                <button
+                                  onClick={() => handleUnarchiveExam(ex)}
+                                  className="p-1.5 text-purple-400 hover:text-purple-300 hover:bg-purple-900/30 rounded-lg transition-colors inline-flex items-center"
+                                  title="Unarchive Exam (Restore to Draft)"
+                                >
+                                  <ArchiveRestore className="w-4 h-4" />
+                                </button>
+                              ) : (
+                                <button
+                                  onClick={() => handleOpenArchiveExam(ex)}
+                                  className="p-1.5 text-amber-400 hover:text-amber-300 hover:bg-amber-900/30 rounded-lg transition-colors inline-flex items-center"
+                                  title="Archive Exam (Preserves all attempts & scores)"
+                                >
+                                  <Archive className="w-4 h-4" />
+                                </button>
+                              )}
+                              <button
+                                onClick={() => handleOpenDeleteExam(ex)}
+                                className="p-1.5 text-rose-400 hover:text-rose-300 hover:bg-rose-900/30 rounded-lg transition-colors inline-flex items-center"
+                                title="Delete Examination"
+                              >
+                                <Trash2 className="w-4 h-4" />
                               </button>
                             </td>
                           </tr>
@@ -3351,13 +3476,7 @@ export const AdminDashboard: React.FC = () => {
                   required
                   disabled={currentUser?.role === 'hod'}
                   value={examFormDeptId}
-                  onChange={(e) => {
-                    const newDeptId = e.target.value ? Number(e.target.value) : '';
-                    setExamFormDeptId(newDeptId);
-                    // Update subject dropdown to match this department
-                    const matching = subjects.filter(s => s.department_id === newDeptId && s.is_active);
-                    setExamFormSubjectId(matching.length > 0 ? matching[0].id : '');
-                  }}
+                  onChange={(e) => handleExamDeptChange(e.target.value ? Number(e.target.value) : '')}
                   className={`w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white ${
                     currentUser?.role === 'hod' ? 'opacity-80 cursor-not-allowed' : ''
                   }`}
@@ -3432,12 +3551,15 @@ export const AdminDashboard: React.FC = () => {
                   required
                   value={examFormSubjectId}
                   onChange={(e) => setExamFormSubjectId(e.target.value ? Number(e.target.value) : '')}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white"
+                  disabled={!examFormDeptId}
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  <option value="">Select Subject...</option>
-                  {displayExamSubjects.length === 0 ? (
+                  <option value="">
+                    {!examFormDeptId ? 'Please select a department above first...' : 'Select Subject...'}
+                  </option>
+                  {displayExamSubjects.length === 0 && examFormDeptId ? (
                     <option disabled value="">
-                      {examFormDeptId ? 'No subjects found for this department. Please add a subject first.' : 'Select a department above to see subjects'}
+                      No active subjects found for this department. Please add a subject first.
                     </option>
                   ) : (
                     displayExamSubjects.map((s) => (
@@ -3937,6 +4059,142 @@ export const AdminDashboard: React.FC = () => {
                 className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold"
               >
                 Delete Question
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* MODAL: DELETE / SAFE ARCHIVE EXAMINATION                  */}
+      {/* ========================================================= */}
+      {showExamDeleteModal && examToDelete && (
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl">
+            {examToDelete.attempts_count > 0 ? (
+              <>
+                <div className="flex items-center space-x-3 text-amber-500">
+                  <ShieldAlert className="w-6 h-6" />
+                  <h4 className="text-base font-bold text-slate-900">Protected Examination</h4>
+                </div>
+                <div className="space-y-2 text-xs text-slate-600 leading-relaxed">
+                  <p>
+                    Examination <strong className="text-slate-900">{examToDelete.title}</strong> has <strong className="text-amber-600 font-bold">{examToDelete.attempts_count} completed student attempt(s)</strong> and recorded marks.
+                  </p>
+                  <p className="bg-amber-50 border border-amber-200 text-amber-800 p-3 rounded-xl font-medium">
+                    Permanent deletion is blocked to protect student grades and institutional audit integrity. You can safely <strong>Archive</strong> this examination instead to deactivate it while keeping all historical results intact.
+                  </p>
+                </div>
+                <div className="flex items-center space-x-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowExamDeleteModal(false);
+                      setExamToDelete(null);
+                    }}
+                    className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={examArchiveLoading}
+                    onClick={() => handleConfirmArchiveExam(examToDelete)}
+                    className="flex-1 py-2.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold flex items-center justify-center space-x-1.5 shadow-xs cursor-pointer"
+                  >
+                    <Archive className="w-4 h-4" />
+                    <span>{examArchiveLoading ? 'Archiving...' : 'Archive Safely'}</span>
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="flex items-center space-x-3 text-rose-500">
+                  <AlertTriangle className="w-6 h-6" />
+                  <h4 className="text-base font-bold text-slate-900">Delete Examination</h4>
+                </div>
+                <div className="space-y-2 text-xs text-slate-600 leading-relaxed">
+                  <p>
+                    Are you sure you want to permanently delete <strong className="text-slate-900">{examToDelete.title}</strong>?
+                  </p>
+                  <p className="bg-slate-50 border border-slate-200 p-2.5 rounded-xl text-slate-600">
+                    This examination has <strong>0 student attempts</strong>. Its question mappings and student assignments will be safely removed.
+                  </p>
+                </div>
+                <div className="flex items-center space-x-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowExamDeleteModal(false);
+                      setExamToDelete(null);
+                    }}
+                    className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={examArchiveLoading}
+                    onClick={() => handleConfirmArchiveExam(examToDelete)}
+                    className="flex-1 py-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-semibold flex items-center justify-center space-x-1 cursor-pointer"
+                    title="Archive without deleting"
+                  >
+                    <Archive className="w-3.5 h-3.5" />
+                    <span>Archive</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={examDeleteLoading}
+                    onClick={handleConfirmDeleteExam}
+                    className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold flex items-center justify-center space-x-1 cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>{examDeleteLoading ? 'Deleting...' : 'Delete'}</span>
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* MODAL: ARCHIVE EXAMINATION CONFIRMATION                   */}
+      {/* ========================================================= */}
+      {showExamArchiveModal && examToArchive && (
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center space-x-3 text-amber-500">
+              <Archive className="w-6 h-6" />
+              <h4 className="text-base font-bold text-slate-900">Archive Examination</h4>
+            </div>
+            <div className="space-y-2 text-xs text-slate-600 leading-relaxed">
+              <p>
+                Archive examination <strong className="text-slate-900">{examToArchive.title}</strong>?
+              </p>
+              <p className="bg-amber-50 border border-amber-200 text-amber-800 p-3 rounded-xl font-medium">
+                Archiving sets this exam to <strong>Archived</strong> status and prevents new attempts. All existing attempts, student marks, and answer logs will be 100% preserved. You can restore it to draft at any time.
+              </p>
+            </div>
+            <div className="flex items-center space-x-3 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowExamArchiveModal(false);
+                  setExamToArchive(null);
+                }}
+                className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={examArchiveLoading}
+                onClick={() => handleConfirmArchiveExam(examToArchive)}
+                className="flex-1 py-2.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold flex items-center justify-center space-x-1.5 shadow-xs cursor-pointer"
+              >
+                <Archive className="w-4 h-4" />
+                <span>{examArchiveLoading ? 'Archiving...' : 'Confirm Archive'}</span>
               </button>
             </div>
           </div>
