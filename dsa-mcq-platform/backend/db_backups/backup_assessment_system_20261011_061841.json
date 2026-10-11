@@ -1,0 +1,42 @@
+{
+  "metadata": {
+    "backup_version": "1.0",
+    "created_at": "2026-10-11T06:18:41.478544",
+    "created_by": "admin",
+    "table_counts": {
+      "admin_users": 0,
+      "departments": 0,
+      "programs": 0,
+      "academic_years": 0,
+      "semesters": 0,
+      "subjects": 0,
+      "questions": 0,
+      "exams": 0,
+      "exam_questions": 0,
+      "students": 0,
+      "exam_students": 0,
+      "attempts": 0,
+      "student_answers": 0,
+      "exam_security_logs": 0,
+      "assessment_settings": 0
+    },
+    "total_records": 0
+  },
+  "data": {
+    "admin_users": [],
+    "departments": [],
+    "programs": [],
+    "academic_years": [],
+    "semesters": [],
+    "subjects": [],
+    "questions": [],
+    "exams": [],
+    "exam_questions": [],
+    "students": [],
+    "exam_students": [],
+    "attempts": [],
+    "student_answers": [],
+    "exam_security_logs": [],
+    "assessment_settings": []
+  }
+}

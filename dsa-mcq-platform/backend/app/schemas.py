@@ -165,12 +165,37 @@ class StudentToken(BaseModel):
 
 class BulkDeleteStudentsRequest(BaseModel):
     student_ids: List[int]
+    confirm_text: Optional[str] = None
+    force: Optional[bool] = False
 
 class BulkDeleteStudentsResponse(BaseModel):
     status: str
     message: str
     deleted_count: int
     student_ids: List[int]
+
+
+class BulkDeleteRequest(BaseModel):
+    ids: List[int]
+    confirm_text: Optional[str] = None
+    force: Optional[bool] = False
+
+class BulkDeleteResponse(BaseModel):
+    status: str
+    message: str
+    deleted_count: int
+    deleted_ids: List[int]
+    blocked_ids: Optional[List[int]] = []
+    blocked_reasons: Optional[List[str]] = []
+
+class DependencyCheckResponse(BaseModel):
+    record_id: int
+    record_name: str
+    record_type: str
+    can_delete: bool
+    has_dependencies: bool
+    dependency_counts: Dict[str, int]
+    reason: str
 
 
 

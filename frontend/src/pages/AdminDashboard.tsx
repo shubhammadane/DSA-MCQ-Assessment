@@ -64,6 +64,19 @@ export const AdminDashboard: React.FC = () => {
   const [showAddSubjectModal, setShowAddSubjectModal] = useState(false);
   const [editingSubject, setEditingSubject] = useState<Subject | null>(null);
   const [deletingSubject, setDeletingSubject] = useState<Subject | null>(null);
+  const [subjectDeps, setSubjectDeps] = useState<{
+    loading: boolean;
+    has_dependencies: boolean;
+    can_delete: boolean;
+    question_count: number;
+    exam_count: number;
+    attempt_count: number;
+    answers_count?: number;
+    dependency_summary?: string;
+    reason?: string;
+  } | null>(null);
+  const [isDeletingSubject, setIsDeletingSubject] = useState(false);
+  const [isDeactivatingSubject, setIsDeactivatingSubject] = useState(false);
   const [subjectFormName, setSubjectFormName] = useState('');
   const [subjectFormCode, setSubjectFormCode] = useState('');
   const [subjectFormDeptId, setSubjectFormDeptId] = useState<number | ''>('');
@@ -169,7 +182,49 @@ export const AdminDashboard: React.FC = () => {
   const [recordsSearch, setRecordsSearch] = useState('');
   const [recordsDeptFilter, setRecordsDeptFilter] = useState('');
   const [deletingAttempt, setDeletingAttempt] = useState<StudentSummary | null>(null);
+  const [attemptDeps, setAttemptDeps] = useState<any | null>(null);
+  const [checkingAttemptDeps, setCheckingAttemptDeps] = useState(false);
+  const [isDeletingAttempt, setIsDeletingAttempt] = useState(false);
   const [inspectingAttempt, setInspectingAttempt] = useState<any | null>(null);
+
+  // Multi-Selection State for All Modules
+  const [selectedSubjectIds, setSelectedSubjectIds] = useState<number[]>([]);
+  const [selectedQuestionIds, setSelectedQuestionIds] = useState<number[]>([]);
+  const [selectedExamIds, setSelectedExamIds] = useState<number[]>([]);
+  const [selectedRecordAttemptIds, setSelectedRecordAttemptIds] = useState<number[]>([]);
+  const [selectedUserIds, setSelectedUserIds] = useState<number[]>([]);
+
+  // Question Dependency & Safe Deletion State
+  const [questionDeps, setQuestionDeps] = useState<any | null>(null);
+  const [checkingQuestionDeps, setCheckingQuestionDeps] = useState(false);
+  const [isDeletingQuestion, setIsDeletingQuestion] = useState(false);
+
+  // Department Safe Deletion State
+  const [deptToDelete, setDeptToDelete] = useState<Department | null>(null);
+  const [deptDeps, setDeptDeps] = useState<any | null>(null);
+  const [checkingDeptDeps, setCheckingDeptDeps] = useState(false);
+  const [isDeletingDept, setIsDeletingDept] = useState(false);
+
+  // Admin User Accounts & Verified Backups State
+  const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
+  const [deletingUser, setDeletingUser] = useState<AdminUser | null>(null);
+  const [isDeletingUser, setIsDeletingUser] = useState(false);
+  const [systemBackups, setSystemBackups] = useState<any[]>([]);
+  const [creatingBackup, setCreatingBackup] = useState(false);
+  const [verifyingBackupFilename, setVerifyingBackupFilename] = useState<string | null>(null);
+  const [verifiedBackupResult, setVerifiedBackupResult] = useState<any | null>(null);
+
+  // High-Impact Bulk Delete Confirmation State (Requirement 3 & 4)
+  const [bulkDeleteConfig, setBulkDeleteConfig] = useState<{
+    type: 'subjects' | 'questions' | 'exams' | 'attempts' | 'users' | null;
+    ids: number[];
+    title: string;
+    description: string;
+    itemCount: number;
+    impactDetails?: string;
+  } | null>(null);
+  const [bulkDeleteConfirmText, setBulkDeleteConfirmText] = useState('');
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
 
   // Assessment Settings State
   const [settingsQuestionCount, setSettingsQuestionCount] = useState<number>(50);
@@ -334,11 +389,52 @@ export const AdminDashboard: React.FC = () => {
 
   const loadSettings = async () => {
     try {
-      const res = await api.get<AssessmentSettings>('/admin/assessment-settings');
-      setSettingsQuestionCount(res.data.question_count);
-      setSettingsTimeLimit(res.data.time_limit_minutes);
+      const [settingsRes, usersRes, backupsRes] = await Promise.all([
+        api.get<AssessmentSettings>('/admin/assessment-settings'),
+        api.get('/admin/users'),
+        api.get('/admin/backup/list')
+      ]);
+      setSettingsQuestionCount(settingsRes.data.question_count);
+      setSettingsTimeLimit(settingsRes.data.time_limit_minutes);
+      setAdminUsers(usersRes.data || []);
+      setSystemBackups(backupsRes.data || []);
     } catch (err) {
       console.error('Failed to load settings', err);
+    }
+  };
+
+  const loadSystemBackups = async () => {
+    try {
+      const res = await api.get('/admin/backup/list');
+      setSystemBackups(res.data || []);
+    } catch (err) {
+      console.error('Failed to load system backups', err);
+    }
+  };
+
+  const handleCreateBackup = async () => {
+    setCreatingBackup(true);
+    try {
+      const res = await api.post('/admin/backup/create');
+      showNotice('success', res.data.message || 'Verified database backup created successfully.');
+      await loadSystemBackups();
+    } catch (err: any) {
+      showNotice('error', err.response?.data?.detail || 'Failed to create system backup.');
+    } finally {
+      setCreatingBackup(false);
+    }
+  };
+
+  const handleVerifyBackup = async (filename: string) => {
+    setVerifyingBackupFilename(filename);
+    try {
+      const res = await api.post('/admin/backup/verify', { filename });
+      setVerifiedBackupResult(res.data);
+      showNotice('success', `Backup verified: SHA-256 integrity match (${res.data.recorded_total_records} records).`);
+    } catch (err: any) {
+      showNotice('error', err.response?.data?.detail || 'Backup verification failed.');
+    } finally {
+      setVerifyingBackupFilename(null);
     }
   };
 
@@ -458,6 +554,38 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
+  const openDeleteDeptModal = async (dept: Department) => {
+    setDeptToDelete(dept);
+    setCheckingDeptDeps(true);
+    setDeptDeps(null);
+    try {
+      const res = await api.get(`/departments/${dept.id}/dependencies`);
+      setDeptDeps(res.data);
+    } catch (err: any) {
+      showNotice('error', err.response?.data?.detail || 'Failed to check department dependencies.');
+      setDeptToDelete(null);
+    } finally {
+      setCheckingDeptDeps(false);
+    }
+  };
+
+  const handleConfirmDeleteDept = async () => {
+    if (!deptToDelete) return;
+    setIsDeletingDept(true);
+    try {
+      await api.delete(`/departments/${deptToDelete.id}`);
+      showNotice('success', `Department '${deptToDelete.name}' deleted permanently.`);
+      setDepartments(prev => prev.filter(d => d.id !== deptToDelete.id));
+      setDeptToDelete(null);
+      setDeptDeps(null);
+      loadAcademicData();
+    } catch (err: any) {
+      showNotice('error', err.response?.data?.detail || 'Failed to delete department.');
+    } finally {
+      setIsDeletingDept(false);
+    }
+  };
+
   // ==========================================
   // 2. SUBJECT HANDLERS (SECTIONS 5, 11, 12, 13, 14, 15)
   // ==========================================
@@ -529,17 +657,77 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
+  const openDeleteSubjectModal = async (subj: Subject) => {
+    setDeletingSubject(subj);
+    setSubjectDeps({
+      loading: true,
+      has_dependencies: false,
+      can_delete: false,
+      question_count: 0,
+      exam_count: 0,
+      attempt_count: 0,
+    });
+    try {
+      const res = await api.get(`/subjects/${subj.id}/dependencies`);
+      setSubjectDeps({
+        loading: false,
+        has_dependencies: res.data.has_dependencies,
+        can_delete: res.data.can_delete,
+        question_count: res.data.question_count,
+        exam_count: res.data.exam_count,
+        attempt_count: res.data.attempt_count,
+        answers_count: res.data.answers_count,
+        dependency_summary: res.data.dependency_summary,
+        reason: res.data.reason,
+      });
+    } catch (err: any) {
+      const localQCnt = questions.filter(q => q.subject_id === subj.id).length;
+      const localExamCnt = exams.filter(e => e.subject_id === subj.id).length;
+      const hasLocal = localQCnt > 0 || localExamCnt > 0;
+      setSubjectDeps({
+        loading: false,
+        has_dependencies: hasLocal,
+        can_delete: !hasLocal,
+        question_count: localQCnt,
+        exam_count: localExamCnt,
+        attempt_count: 0,
+        dependency_summary: hasLocal ? `${localQCnt} question(s), ${localExamCnt} exam(s)` : 'None',
+        reason: err.response?.data?.detail || (hasLocal ? 'Subject has active dependencies.' : 'Ready for permanent deletion.'),
+      });
+    }
+  };
+
   const handleDeleteSubject = async () => {
     if (!deletingSubject) return;
+    setIsDeletingSubject(true);
     try {
-      await api.delete(`/subjects/${deletingSubject.id}`);
-      showNotice('success', `Subject '${deletingSubject.name}' deleted successfully.`);
+      const res = await api.delete(`/subjects/${deletingSubject.id}`);
+      showNotice('success', res.data?.message || `Subject '${deletingSubject.name}' (${deletingSubject.code}) permanently deleted successfully.`);
       setSubjects(prev => prev.filter(s => s.id !== deletingSubject.id));
       setDeletingSubject(null);
+      setSubjectDeps(null);
       loadSubjects();
     } catch (err: any) {
       showNotice('error', err.response?.data?.detail || 'Failed to delete subject.');
+    } finally {
+      setIsDeletingSubject(false);
+    }
+  };
+
+  const handleDeactivateSubjectFromModal = async () => {
+    if (!deletingSubject) return;
+    setIsDeactivatingSubject(true);
+    try {
+      const res = await api.patch(`/subjects/${deletingSubject.id}/status`, { is_active: false });
+      showNotice('success', `Subject '${deletingSubject.name}' (${deletingSubject.code}) has been deactivated and archived safely. Historical records preserved.`);
+      setSubjects(prev => prev.map(s => s.id === deletingSubject.id ? res.data : s));
       setDeletingSubject(null);
+      setSubjectDeps(null);
+      loadSubjects();
+    } catch (err: any) {
+      showNotice('error', err.response?.data?.detail || 'Failed to deactivate subject.');
+    } finally {
+      setIsDeactivatingSubject(false);
     }
   };
 
@@ -806,17 +994,50 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
-  const handleDeleteQuestion = async () => {
+  const openDeleteQuestionModal = async (q: AdminQuestion) => {
+    setDeletingQuestion(q);
+    setCheckingQuestionDeps(true);
+    setQuestionDeps(null);
+    try {
+      const res = await api.get(`/admin/questions/${q.id}/dependencies`);
+      setQuestionDeps(res.data);
+    } catch (err: any) {
+      showNotice('error', err.response?.data?.detail || 'Failed to check question dependencies.');
+      setDeletingQuestion(null);
+    } finally {
+      setCheckingQuestionDeps(false);
+    }
+  };
+
+  const handleDeactivateQuestionFromModal = async () => {
     if (!deletingQuestion) return;
+    try {
+      await api.post(`/admin/questions/${deletingQuestion.id}/deactivate`);
+      showNotice('success', `Question #${deletingQuestion.id} deactivated successfully. Historical test records protected.`);
+      setQuestions(prev => prev.map(item => item.id === deletingQuestion.id ? { ...item, is_active: false } : item));
+      setDeletingQuestion(null);
+      setQuestionDeps(null);
+      loadQuestions();
+    } catch (err: any) {
+      showNotice('error', err.response?.data?.detail || 'Failed to deactivate question.');
+    }
+  };
+
+  const handleConfirmDeleteQuestion = async () => {
+    if (!deletingQuestion) return;
+    setIsDeletingQuestion(true);
     try {
       await api.delete(`/admin/questions/${deletingQuestion.id}`);
       showNotice('success', `Question #${deletingQuestion.id} deleted permanently.`);
       setQuestions(prev => prev.filter(q => q.id !== deletingQuestion.id));
+      setSelectedQuestionIds(prev => prev.filter(id => id !== deletingQuestion.id));
       setDeletingQuestion(null);
+      setQuestionDeps(null);
       loadQuestions();
     } catch (err: any) {
       showNotice('error', err.response?.data?.detail || 'Failed to delete question.');
-      setDeletingQuestion(null);
+    } finally {
+      setIsDeletingQuestion(false);
     }
   };
 
@@ -1062,17 +1283,108 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
-  const handleDeleteAttempt = async () => {
+  const openDeleteAttemptModal = async (rec: StudentSummary) => {
+    if (!rec.attempt_id) return;
+    setDeletingAttempt(rec);
+    setCheckingAttemptDeps(true);
+    setAttemptDeps(null);
+    try {
+      const res = await api.get(`/admin/attempts/${rec.attempt_id}/dependencies`);
+      setAttemptDeps(res.data);
+    } catch (err: any) {
+      showNotice('error', err.response?.data?.detail || 'Failed to check attempt dependencies.');
+      setDeletingAttempt(null);
+    } finally {
+      setCheckingAttemptDeps(false);
+    }
+  };
+
+  const handleConfirmDeleteAttempt = async () => {
     if (!deletingAttempt || !deletingAttempt.attempt_id) return;
+    setIsDeletingAttempt(true);
     try {
       await api.delete(`/admin/attempts/${deletingAttempt.attempt_id}`);
       showNotice('success', `Assessment attempt #${deletingAttempt.attempt_id} deleted permanently.`);
+      setStudentRecords(prev => prev.filter(r => r.attempt_id !== deletingAttempt.attempt_id));
+      setSelectedRecordAttemptIds(prev => prev.filter(id => id !== deletingAttempt.attempt_id));
       setDeletingAttempt(null);
+      setAttemptDeps(null);
       loadRecords();
       loadOverview();
     } catch (err: any) {
       showNotice('error', err.response?.data?.detail || 'Failed to delete attempt.');
-      setDeletingAttempt(null);
+    } finally {
+      setIsDeletingAttempt(false);
+    }
+  };
+
+  const handleDeleteUser = (user: AdminUser) => {
+    if (currentUser?.username === user.username) {
+      showNotice('error', 'Cannot delete your own currently active administrator session.');
+      return;
+    }
+    setDeletingUser(user);
+  };
+
+  const handleConfirmDeleteUser = async () => {
+    if (!deletingUser) return;
+    setIsDeletingUser(true);
+    try {
+      await api.delete(`/admin/users/${deletingUser.id}?permanent=true`);
+      showNotice('success', `User '${deletingUser.username}' deleted permanently.`);
+      setAdminUsers(prev => prev.filter(u => u.id !== deletingUser.id));
+      setSelectedUserIds(prev => prev.filter(id => id !== deletingUser.id));
+      setDeletingUser(null);
+    } catch (err: any) {
+      showNotice('error', err.response?.data?.detail || 'Failed to delete user.');
+    } finally {
+      setIsDeletingUser(false);
+    }
+  };
+
+  // Universal High-Impact Bulk Delete Execution (Atomic Backend Operations)
+  const handleExecuteBulkDelete = async () => {
+    if (!bulkDeleteConfig) return;
+    if (bulkDeleteConfirmText.trim().toUpperCase() !== 'DELETE') {
+      showNotice('error', "Type 'DELETE' in uppercase to confirm permanent bulk deletion.");
+      return;
+    }
+    setIsBulkDeleting(true);
+    try {
+      const { type, ids } = bulkDeleteConfig;
+      if (type === 'subjects') {
+        const res = await api.post('/subjects/bulk-delete', { ids, confirm_text: 'DELETE' });
+        showNotice('success', res.data.message || `Deleted ${res.data.deleted_count} subjects.`);
+        setSubjects(prev => prev.filter(s => !ids.includes(s.id)));
+        setSelectedSubjectIds([]);
+      } else if (type === 'questions') {
+        const res = await api.post('/admin/questions/bulk-delete', { ids, confirm_text: 'DELETE' });
+        showNotice('success', res.data.message || `Deleted ${res.data.deleted_count} questions.`);
+        setQuestions(prev => prev.filter(q => !ids.includes(q.id)));
+        setSelectedQuestionIds([]);
+      } else if (type === 'exams') {
+        const res = await api.post('/admin/exams/bulk-delete', { ids, confirm_text: 'DELETE' });
+        showNotice('success', res.data.message || `Deleted ${res.data.deleted_count} exams.`);
+        setExams(prev => prev.filter(e => !ids.includes(e.id)));
+        setSelectedExamIds([]);
+      } else if (type === 'attempts') {
+        const res = await api.post('/admin/attempts/bulk-delete', { ids, confirm_text: 'DELETE' });
+        showNotice('success', res.data.message || `Deleted ${res.data.deleted_count} assessment attempts.`);
+        setStudentRecords(prev => prev.filter(r => !r.attempt_id || !ids.includes(r.attempt_id)));
+        setSelectedRecordAttemptIds([]);
+        loadOverview();
+      } else if (type === 'users') {
+        const res = await api.post('/admin/users/bulk-delete', { ids, confirm_text: 'DELETE' });
+        showNotice('success', res.data.message || `Deleted ${res.data.deleted_count} administrative accounts.`);
+        setAdminUsers(prev => prev.filter(u => !ids.includes(u.id)));
+        setSelectedUserIds([]);
+      }
+      setBulkDeleteConfig(null);
+      setBulkDeleteConfirmText('');
+    } catch (err: any) {
+      showNotice('error', err.response?.data?.detail || 'Bulk deletion failed. Please review dependencies.');
+    } finally {
+      setIsBulkDeleting(false);
     }
   };
 
@@ -1113,6 +1425,33 @@ export const AdminDashboard: React.FC = () => {
         return true;
       })
     : [];
+
+  const filteredSubjects = subjects.filter((s) => {
+    const matchSearch = !subjectSearch || s.name.toLowerCase().includes(subjectSearch.toLowerCase()) || s.code.toLowerCase().includes(subjectSearch.toLowerCase());
+    const matchDept = !subjectDeptFilter || s.department_id.toString() === subjectDeptFilter;
+    const matchStatus = subjectStatusFilter === 'all' || (subjectStatusFilter === 'active' ? s.is_active : !s.is_active);
+    return matchSearch && matchDept && matchStatus;
+  });
+
+  const filteredQuestions = questions.filter((q) => {
+    const matchSearch = !questionSearch || q.question_text.toLowerCase().includes(questionSearch.toLowerCase()) || (q.topic && q.topic.toLowerCase().includes(questionSearch.toLowerCase()));
+    const matchDept = !questionDeptFilter || q.department_id?.toString() === questionDeptFilter;
+    const matchSubj = !questionSubjectFilter || q.subject_id?.toString() === questionSubjectFilter;
+    const matchStatus = questionStatusFilter === 'all' || (questionStatusFilter === 'active' ? q.is_active : !q.is_active);
+    return matchSearch && matchDept && matchSubj && matchStatus;
+  });
+
+  const filteredExams = exams.filter((ex) => {
+    const matchSearch = !examSearch || ex.title.toLowerCase().includes(examSearch.toLowerCase()) || (ex.subject_name && ex.subject_name.toLowerCase().includes(examSearch.toLowerCase()));
+    const matchStatus = !examStatusFilter || ex.status === examStatusFilter;
+    return matchSearch && matchStatus;
+  });
+
+  const filteredRecords = studentRecords.filter((rec) => {
+    const matchSearch = !recordsSearch || rec.name.toLowerCase().includes(recordsSearch.toLowerCase()) || rec.enrollment_no.toLowerCase().includes(recordsSearch.toLowerCase());
+    const matchDept = !recordsDeptFilter || rec.department === recordsDeptFilter;
+    return matchSearch && matchDept;
+  });
 
   if (loading) {
     return (
@@ -1709,15 +2048,26 @@ export const AdminDashboard: React.FC = () => {
                       <span className="text-[11px] text-slate-500 font-mono">ID: {d.id}</span>
                     </div>
                   </div>
-                  <button
-                    onClick={() => handleToggleDeptStatus(d)}
-                    className={`text-xs px-2.5 py-1 rounded-lg border font-semibold transition-colors ${d.is_active
-                        ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20'
-                        : 'bg-slate-800 text-slate-400 border-slate-200 hover:bg-slate-700'
-                      }`}
-                  >
-                    {d.is_active ? 'Active' : 'Inactive'}
-                  </button>
+                  <div className="flex items-center space-x-2">
+                    <button
+                      onClick={() => handleToggleDeptStatus(d)}
+                      className={`text-xs px-2.5 py-1 rounded-lg border font-semibold transition-colors cursor-pointer ${d.is_active
+                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                          : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200'
+                        }`}
+                    >
+                      {d.is_active ? 'Active' : 'Inactive'}
+                    </button>
+                    {currentUser?.role === 'super_admin' && (
+                      <button
+                        onClick={() => openDeleteDeptModal(d)}
+                        className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                        title="Delete Department Permanently"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
@@ -2023,16 +2373,96 @@ export const AdminDashboard: React.FC = () => {
                 <p className="text-xs text-slate-400">
                   Subjects are created manually by the administrator and mapped to departments and semesters.
                 </p>
+                <div className="flex items-center space-x-2 mt-2 text-xs">
+                  <span className="px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700 font-semibold border border-blue-200">
+                    Total: {subjects.length}
+                  </span>
+                  <span className="px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-semibold border border-emerald-200">
+                    Active: {subjects.filter(s => s.is_active).length}
+                  </span>
+                  <span className="px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-600 font-semibold border border-slate-200">
+                    Inactive: {subjects.filter(s => !s.is_active).length}
+                  </span>
+                </div>
               </div>
 
-              <button
-                onClick={openAddSubjectModal}
-                className="px-4 py-2 bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 shadow-lg shadow-sky-500/20 transition-all"
-              >
-                <Plus className="w-4 h-4" />
-                <span>+ Add Subject</span>
-              </button>
+              <div className="flex items-center space-x-2">
+                {selectedSubjectIds.length > 0 && (
+                  <button
+                    onClick={() => {
+                      setBulkDeleteConfig({
+                        type: 'subjects',
+                        ids: selectedSubjectIds,
+                        title: `Bulk Delete ${selectedSubjectIds.length} Subject(s)`,
+                        description: `Permanently delete ${selectedSubjectIds.length} selected subjects from the institution database.`,
+                        itemCount: selectedSubjectIds.length,
+                        impactDetails: 'Any subjects linked to active examinations or question banks will be safely blocked by atomic backend verification to protect institutional integrity.'
+                      });
+                      setBulkDeleteConfirmText('');
+                    }}
+                    className="px-3.5 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 shadow-sm transition-all cursor-pointer animate-pulse"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span>Delete Selected ({selectedSubjectIds.length})</span>
+                  </button>
+                )}
+                <button
+                  onClick={openAddSubjectModal}
+                  className="px-4 py-2 bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 shadow-lg shadow-sky-500/20 transition-all cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>+ Add Subject</span>
+                </button>
+              </div>
             </div>
+
+            {/* Selection Banner if subjects are checked */}
+            {selectedSubjectIds.length > 0 && (
+              <div className="bg-rose-50 border border-rose-200 rounded-2xl p-3.5 flex flex-wrap items-center justify-between gap-3 text-xs text-rose-900 shadow-xs">
+                <div className="flex items-center space-x-2">
+                  <AlertTriangle className="w-4 h-4 text-rose-600" />
+                  <span className="font-bold">
+                    {selectedSubjectIds.length} subject{selectedSubjectIds.length > 1 ? 's' : ''} selected
+                  </span>
+                </div>
+                <div className="flex items-center space-x-2">
+                  {filteredSubjects.length > selectedSubjectIds.length && (
+                    <button
+                      onClick={() => {
+                        const allFilteredIds = filteredSubjects.map(s => s.id);
+                        setSelectedSubjectIds(Array.from(new Set([...selectedSubjectIds, ...allFilteredIds])));
+                      }}
+                      className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-xl text-xs font-semibold shadow-xs cursor-pointer"
+                    >
+                      Select All Matching ({filteredSubjects.length})
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      setBulkDeleteConfig({
+                        type: 'subjects',
+                        ids: selectedSubjectIds,
+                        title: `Bulk Delete ${selectedSubjectIds.length} Subject(s)`,
+                        description: `Permanently delete ${selectedSubjectIds.length} selected subjects from the institution database.`,
+                        itemCount: selectedSubjectIds.length,
+                        impactDetails: 'Any subjects linked to active examinations or question banks will be safely blocked by atomic backend verification to protect institutional integrity.'
+                      });
+                      setBulkDeleteConfirmText('');
+                    }}
+                    className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 shadow-xs cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete Selected ({selectedSubjectIds.length})</span>
+                  </button>
+                  <button
+                    onClick={() => setSelectedSubjectIds([])}
+                    className="px-2.5 py-1 text-slate-600 hover:text-slate-900 font-semibold cursor-pointer"
+                  >
+                    Deselect All
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Filter Bar */}
             <div className="bg-white border border-slate-200 rounded-2xl p-4 flex flex-wrap items-center gap-4">
@@ -2043,14 +2473,14 @@ export const AdminDashboard: React.FC = () => {
                   placeholder="Search subject by name or code..."
                   value={subjectSearch}
                   onChange={(e) => setSubjectSearch(e.target.value)}
-                  className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-500"
+                  className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-500 focus:outline-none focus:border-blue-500"
                 />
               </div>
 
               <select
                 value={subjectDeptFilter}
                 onChange={(e) => setSubjectDeptFilter(e.target.value)}
-                className="py-2 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-300 focus:outline-none"
+                className="py-2 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 font-medium focus:outline-none"
               >
                 <option value="">All Departments</option>
                 {departments.map((d) => (
@@ -2061,7 +2491,7 @@ export const AdminDashboard: React.FC = () => {
               <select
                 value={subjectStatusFilter}
                 onChange={(e) => setSubjectStatusFilter(e.target.value as any)}
-                className="py-2 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-300 focus:outline-none"
+                className="py-2 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 font-medium focus:outline-none"
               >
                 <option value="all">All Statuses</option>
                 <option value="active">Active</option>
@@ -2075,6 +2505,23 @@ export const AdminDashboard: React.FC = () => {
                 <table className="w-full text-left text-xs">
                   <thead className="bg-slate-950 border-b border-slate-200 text-slate-400 font-semibold uppercase tracking-wider">
                     <tr>
+                      <th className="py-3.5 px-4 w-10">
+                        <input
+                          type="checkbox"
+                          checked={filteredSubjects.length > 0 && filteredSubjects.every(s => selectedSubjectIds.includes(s.id))}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              const ids = filteredSubjects.map(s => s.id);
+                              setSelectedSubjectIds(prev => Array.from(new Set([...prev, ...ids])));
+                            } else {
+                              const idsSet = new Set(filteredSubjects.map(s => s.id));
+                              setSelectedSubjectIds(prev => prev.filter(id => !idsSet.has(id)));
+                            }
+                          }}
+                          className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                          title="Select all matching subjects on this page"
+                        />
+                      </th>
                       <th className="py-3.5 px-4">Subject Name</th>
                       <th className="py-3.5 px-4">Code</th>
                       <th className="py-3.5 px-4">Department</th>
@@ -2086,73 +2533,91 @@ export const AdminDashboard: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/60">
-                    {subjects.length === 0 ? (
+                    {filteredSubjects.length === 0 ? (
                       <tr>
-                        <td colSpan={8} className="py-8 text-center text-slate-500">
-                          No subjects created yet. Click "+ Add Subject" to manually add a subject.
+                        <td colSpan={9} className="py-8 text-center text-slate-500">
+                          No matching subjects found. Click "+ Add Subject" to manually add a subject.
                         </td>
                       </tr>
                     ) : (
-                      subjects
-                        .filter((s) => {
-                          const matchSearch = !subjectSearch || s.name.toLowerCase().includes(subjectSearch.toLowerCase()) || s.code.toLowerCase().includes(subjectSearch.toLowerCase());
-                          const matchDept = !subjectDeptFilter || s.department_id.toString() === subjectDeptFilter;
-                          const matchStatus = subjectStatusFilter === 'all' || (subjectStatusFilter === 'active' ? s.is_active : !s.is_active);
-                          return matchSearch && matchDept && matchStatus;
-                        })
-                        .map((subj) => (
-                          <tr key={subj.id} className="hover:bg-slate-800/30 transition-colors">
-                            <td className="py-3.5 px-4 font-bold text-slate-900">{subj.name}</td>
-                            <td className="py-3.5 px-4 font-mono text-blue-600 font-semibold">{subj.code}</td>
-                            <td className="py-3.5 px-4 text-slate-300">{subj.department_name || 'N/A'}</td>
-                            <td className="py-3.5 px-4 text-slate-400">{subj.program_name || 'UG'}</td>
-                            <td className="py-3.5 px-4 text-slate-400">{subj.year_name || '-'}</td>
-                            <td className="py-3.5 px-4 text-slate-400">{subj.semester_name || '-'}</td>
-                            <td className="py-3.5 px-4">
-                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${subj.is_active
-                                  ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                                  : 'bg-slate-800 text-slate-400 border-slate-200'
-                                }`}>
-                                {subj.is_active ? 'Active' : 'Inactive'}
-                              </span>
-                            </td>
-                            <td className="py-3.5 px-4 text-right space-x-1.5">
+                      filteredSubjects.map((subj) => (
+                        <tr key={subj.id} className="hover:bg-slate-800/30 transition-colors">
+                          <td className="py-3.5 px-4">
+                            <input
+                              type="checkbox"
+                              checked={selectedSubjectIds.includes(subj.id)}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setSelectedSubjectIds(prev => [...prev, subj.id]);
+                                } else {
+                                  setSelectedSubjectIds(prev => prev.filter(id => id !== subj.id));
+                                }
+                              }}
+                              className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                            />
+                          </td>
+                          <td className="py-3.5 px-4 font-bold text-slate-900">{subj.name}</td>
+                          <td className="py-3.5 px-4 font-mono text-blue-600 font-semibold">{subj.code}</td>
+                          <td className="py-3.5 px-4 text-slate-300">{subj.department_name || 'N/A'}</td>
+                          <td className="py-3.5 px-4 text-slate-400">{subj.program_name || 'UG'}</td>
+                          <td className="py-3.5 px-4 text-slate-400">{subj.year_name || '-'}</td>
+                          <td className="py-3.5 px-4 text-slate-400">{subj.semester_name || '-'}</td>
+                          <td className="py-3.5 px-4">
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${subj.is_active
+                                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                                : 'bg-slate-800 text-slate-400 border-slate-200'
+                              }`}>
+                              {subj.is_active ? 'Active' : 'Inactive'}
+                            </span>
+                          </td>
+                          <td className="py-3.5 px-4 text-right space-x-1.5">
+                            <button
+                              onClick={() => {
+                                setEditingSubject(subj);
+                                setSubjectFormName(subj.name);
+                                setSubjectFormCode(subj.code);
+                                setSubjectFormDeptId(subj.department_id);
+                                setSubjectFormProgId(subj.program_id || '');
+                                setSubjectFormYearId(subj.academic_year_id || '');
+                                setSubjectFormSemId(subj.semester_id || '');
+                                setShowAddSubjectModal(true);
+                              }}
+                              className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
+                              title="Edit"
+                            >
+                              <Edit3 className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => handleToggleSubjectStatus(subj)}
+                              className={`p-1.5 rounded-lg transition-colors cursor-pointer ${subj.is_active
+                                  ? 'text-slate-400 hover:text-amber-400 hover:bg-amber-500/10'
+                                  : 'text-emerald-400 hover:bg-emerald-500/10'
+                                }`}
+                              title={subj.is_active ? 'Deactivate' : 'Activate'}
+                            >
+                              <Power className="w-4 h-4" />
+                            </button>
+                            {currentUser?.role !== 'faculty' && (
                               <button
-                                onClick={() => {
-                                  setEditingSubject(subj);
-                                  setSubjectFormName(subj.name);
-                                  setSubjectFormCode(subj.code);
-                                  setSubjectFormDeptId(subj.department_id);
-                                  setSubjectFormProgId(subj.program_id || '');
-                                  setSubjectFormYearId(subj.academic_year_id || '');
-                                  setSubjectFormSemId(subj.semester_id || '');
-                                  setShowAddSubjectModal(true);
-                                }}
-                                className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors"
-                                title="Edit"
-                              >
-                                <Edit3 className="w-4 h-4" />
-                              </button>
-                              <button
-                                onClick={() => handleToggleSubjectStatus(subj)}
-                                className={`p-1.5 rounded-lg transition-colors ${subj.is_active
-                                    ? 'text-slate-400 hover:text-amber-400 hover:bg-amber-500/10'
-                                    : 'text-emerald-400 hover:bg-emerald-500/10'
-                                  }`}
-                                title={subj.is_active ? 'Deactivate' : 'Activate'}
-                              >
-                                <Power className="w-4 h-4" />
-                              </button>
-                              <button
-                                onClick={() => setDeletingSubject(subj)}
-                                className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors"
-                                title="Delete"
+                                onClick={() => openDeleteSubjectModal(subj)}
+                                disabled={currentUser?.role === 'hod' && subj.department_id !== currentUser.department_id}
+                                className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+                                  currentUser?.role === 'hod' && subj.department_id !== currentUser.department_id
+                                    ? 'text-slate-600 cursor-not-allowed opacity-30'
+                                    : 'text-slate-400 hover:text-rose-400 hover:bg-rose-500/10'
+                                }`}
+                                title={
+                                  currentUser?.role === 'hod' && subj.department_id !== currentUser.department_id
+                                    ? "Cannot delete subjects from other departments"
+                                    : "Delete Subject Safely"
+                                }
                               >
                                 <Trash2 className="w-4 h-4" />
                               </button>
-                            </td>
-                          </tr>
-                        ))
+                            )}
+                          </td>
+                        </tr>
+                      ))
                     )}
                   </tbody>
                 </table>
@@ -2173,16 +2638,96 @@ export const AdminDashboard: React.FC = () => {
                 <p className="text-xs text-slate-400">
                   Total Questions: {questions.length} | Subject-Specific & Department Mapped
                 </p>
+                <div className="flex items-center space-x-2 mt-2 text-xs">
+                  <span className="px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700 font-semibold border border-blue-200">
+                    Total: {questions.length}
+                  </span>
+                  <span className="px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-semibold border border-emerald-200">
+                    Active: {questions.filter(q => q.is_active).length}
+                  </span>
+                  <span className="px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-600 font-semibold border border-slate-200">
+                    Inactive: {questions.filter(q => !q.is_active).length}
+                  </span>
+                </div>
               </div>
 
-              <button
-                onClick={openAddQuestionModal}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 transition-colors"
-              >
-                <Plus className="w-4 h-4" />
-                <span>+ Add Question</span>
-              </button>
+              <div className="flex items-center space-x-2">
+                {selectedQuestionIds.length > 0 && (
+                  <button
+                    onClick={() => {
+                      setBulkDeleteConfig({
+                        type: 'questions',
+                        ids: selectedQuestionIds,
+                        title: `Bulk Delete ${selectedQuestionIds.length} Question(s)`,
+                        description: `Permanently delete ${selectedQuestionIds.length} selected questions from the question bank.`,
+                        itemCount: selectedQuestionIds.length,
+                        impactDetails: 'Questions linked to student exam attempts will be safely blocked by atomic backend dependency verification to preserve assessment history.'
+                      });
+                      setBulkDeleteConfirmText('');
+                    }}
+                    className="px-3.5 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 shadow-sm transition-all cursor-pointer animate-pulse"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span>Delete Selected ({selectedQuestionIds.length})</span>
+                  </button>
+                )}
+                <button
+                  onClick={openAddQuestionModal}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 transition-colors cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>+ Add Question</span>
+                </button>
+              </div>
             </div>
+
+            {/* Selection Banner if questions are checked */}
+            {selectedQuestionIds.length > 0 && (
+              <div className="bg-rose-50 border border-rose-200 rounded-2xl p-3.5 flex flex-wrap items-center justify-between gap-3 text-xs text-rose-900 shadow-xs">
+                <div className="flex items-center space-x-2">
+                  <AlertTriangle className="w-4 h-4 text-rose-600" />
+                  <span className="font-bold">
+                    {selectedQuestionIds.length} question{selectedQuestionIds.length > 1 ? 's' : ''} selected
+                  </span>
+                </div>
+                <div className="flex items-center space-x-2">
+                  {filteredQuestions.length > selectedQuestionIds.length && (
+                    <button
+                      onClick={() => {
+                        const allFilteredIds = filteredQuestions.map(q => q.id);
+                        setSelectedQuestionIds(Array.from(new Set([...selectedQuestionIds, ...allFilteredIds])));
+                      }}
+                      className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-xl text-xs font-semibold shadow-xs cursor-pointer"
+                    >
+                      Select All Matching ({filteredQuestions.length})
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      setBulkDeleteConfig({
+                        type: 'questions',
+                        ids: selectedQuestionIds,
+                        title: `Bulk Delete ${selectedQuestionIds.length} Question(s)`,
+                        description: `Permanently delete ${selectedQuestionIds.length} selected questions from the question bank.`,
+                        itemCount: selectedQuestionIds.length,
+                        impactDetails: 'Questions linked to student exam attempts will be safely blocked by atomic backend dependency verification to preserve assessment history.'
+                      });
+                      setBulkDeleteConfirmText('');
+                    }}
+                    className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 shadow-xs cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete Selected ({selectedQuestionIds.length})</span>
+                  </button>
+                  <button
+                    onClick={() => setSelectedQuestionIds([])}
+                    className="px-2.5 py-1 text-slate-600 hover:text-slate-900 font-semibold cursor-pointer"
+                  >
+                    Deselect All
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Filter Bar */}
             <div className="bg-white border border-slate-200 rounded-2xl p-4 flex flex-wrap items-center gap-4">
@@ -2193,14 +2738,14 @@ export const AdminDashboard: React.FC = () => {
                   placeholder="Search question text or topic..."
                   value={questionSearch}
                   onChange={(e) => setQuestionSearch(e.target.value)}
-                  className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-500"
+                  className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-500 focus:outline-none focus:border-sky-500"
                 />
               </div>
 
               <select
                 value={questionDeptFilter}
                 onChange={(e) => setQuestionDeptFilter(e.target.value)}
-                className="py-2 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-300 focus:outline-none"
+                className="py-2 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 focus:outline-none"
               >
                 <option value="">All Departments</option>
                 {departments.map((d) => (
@@ -2211,7 +2756,7 @@ export const AdminDashboard: React.FC = () => {
               <select
                 value={questionSubjectFilter}
                 onChange={(e) => setQuestionSubjectFilter(e.target.value)}
-                className="py-2 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-300 focus:outline-none"
+                className="py-2 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 focus:outline-none"
               >
                 <option value="">All Subjects</option>
                 {subjects.map((s) => (
@@ -2222,7 +2767,7 @@ export const AdminDashboard: React.FC = () => {
               <select
                 value={questionStatusFilter}
                 onChange={(e) => setQuestionStatusFilter(e.target.value as any)}
-                className="py-2 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-300 focus:outline-none"
+                className="py-2 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 focus:outline-none"
               >
                 <option value="all">All Statuses</option>
                 <option value="active">Active</option>
@@ -2236,6 +2781,23 @@ export const AdminDashboard: React.FC = () => {
                 <table className="w-full text-left text-xs">
                   <thead className="bg-slate-950 border-b border-slate-200 text-slate-400 font-semibold uppercase tracking-wider">
                     <tr>
+                      <th className="py-3.5 px-4 w-10">
+                        <input
+                          type="checkbox"
+                          checked={filteredQuestions.length > 0 && filteredQuestions.every(q => selectedQuestionIds.includes(q.id))}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              const ids = filteredQuestions.map(q => q.id);
+                              setSelectedQuestionIds(prev => Array.from(new Set([...prev, ...ids])));
+                            } else {
+                              const idsSet = new Set(filteredQuestions.map(q => q.id));
+                              setSelectedQuestionIds(prev => prev.filter(id => !idsSet.has(id)));
+                            }
+                          }}
+                          className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                          title="Select all matching questions on this page"
+                        />
+                      </th>
                       <th className="py-3.5 px-4 w-12">#</th>
                       <th className="py-3.5 px-4">Question Text</th>
                       <th className="py-3.5 px-4">Subject / Topic</th>
@@ -2246,39 +2808,52 @@ export const AdminDashboard: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/60">
-                    {questions
-                      .filter((q) => {
-                        const matchSearch = !questionSearch || q.question_text.toLowerCase().includes(questionSearch.toLowerCase()) || (q.topic && q.topic.toLowerCase().includes(questionSearch.toLowerCase()));
-                        const matchDept = !questionDeptFilter || q.department_id?.toString() === questionDeptFilter;
-                        const matchSubj = !questionSubjectFilter || q.subject_id?.toString() === questionSubjectFilter;
-                        const matchStatus = questionStatusFilter === 'all' || (questionStatusFilter === 'active' ? q.is_active : !q.is_active);
-                        return matchSearch && matchDept && matchSubj && matchStatus;
-                      })
-                      .map((q) => (
+                    {filteredQuestions.length === 0 ? (
+                      <tr>
+                        <td colSpan={8} className="py-8 text-center text-slate-500">
+                          No matching questions found in question bank.
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredQuestions.map((q) => (
                         <tr key={q.id} className="hover:bg-slate-800/30 transition-colors">
+                          <td className="py-3.5 px-4">
+                            <input
+                              type="checkbox"
+                              checked={selectedQuestionIds.includes(q.id)}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setSelectedQuestionIds(prev => [...prev, q.id]);
+                                } else {
+                                  setSelectedQuestionIds(prev => prev.filter(id => id !== q.id));
+                                }
+                              }}
+                              className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                            />
+                          </td>
                           <td className="py-3.5 px-4 font-mono text-slate-500">{q.id}</td>
                           <td className="py-3.5 px-4 max-w-md">
-                            <p className="font-medium text-white line-clamp-2">{q.question_text}</p>
+                            <p className="font-medium text-slate-900 line-clamp-2">{q.question_text}</p>
                           </td>
-                          <td className="py-3.5 px-4 text-slate-400">
-                            <span className="font-semibold text-slate-300 block">{q.subject_name || 'General DSA'}</span>
+                          <td className="py-3.5 px-4 text-slate-600">
+                            <span className="font-semibold text-slate-800 block">{q.subject_name || 'General DSA'}</span>
                             <span className="text-[11px] text-slate-500">{q.topic || 'DSA'}</span>
                           </td>
-                          <td className="py-3.5 px-4 font-mono font-bold text-emerald-400">{q.correct_answer}</td>
+                          <td className="py-3.5 px-4 font-mono font-bold text-emerald-600">{q.correct_answer}</td>
                           <td className="py-3.5 px-4">
-                            <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 text-slate-300">
+                            <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-100 text-slate-700 border border-slate-200">
                               {q.difficulty || 'Medium'}
                             </span>
                           </td>
                           <td className="py-3.5 px-4">
                             <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${q.is_active
-                                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                                : 'bg-slate-800 text-slate-400 border-slate-200'
+                                ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20'
+                                : 'bg-slate-100 text-slate-500 border-slate-200'
                               }`}>
                               {q.is_active ? 'Active' : 'Inactive'}
                             </span>
                           </td>
-                          <td className="py-3.5 px-4 text-right space-x-1.5">
+                          <td className="py-3.5 px-4 text-right space-x-1.5 whitespace-nowrap">
                             <button
                               onClick={() => {
                                 setEditingQuestion(q);
@@ -2295,31 +2870,32 @@ export const AdminDashboard: React.FC = () => {
                                 setQFormSubjectId(q.subject_id || '');
                                 setShowAddQuestionModal(true);
                               }}
-                              className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors"
+                              className="p-1.5 text-slate-400 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
                               title="Edit"
                             >
                               <Edit3 className="w-4 h-4" />
                             </button>
                             <button
                               onClick={() => handleToggleQuestionStatus(q)}
-                              className={`p-1.5 rounded-lg transition-colors ${q.is_active
-                                  ? 'text-slate-400 hover:text-amber-400 hover:bg-amber-500/10'
-                                  : 'text-emerald-400 hover:bg-emerald-500/10'
+                              className={`p-1.5 rounded-lg transition-colors cursor-pointer ${q.is_active
+                                  ? 'text-slate-400 hover:text-amber-600 hover:bg-amber-50'
+                                  : 'text-emerald-600 hover:bg-emerald-50'
                                 }`}
                               title={q.is_active ? 'Deactivate' : 'Activate'}
                             >
                               <Power className="w-4 h-4" />
                             </button>
                             <button
-                              onClick={() => setDeletingQuestion(q)}
-                              className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors"
-                              title="Delete"
+                              onClick={() => openDeleteQuestionModal(q)}
+                              className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                              title="Delete Question Safely"
                             >
                               <Trash2 className="w-4 h-4" />
                             </button>
                           </td>
                         </tr>
-                      ))}
+                      ))
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -2333,22 +2909,105 @@ export const AdminDashboard: React.FC = () => {
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
                 <h3 className="text-lg font-bold text-slate-900 flex items-center space-x-2">
-                  <Calendar className="w-5 h-5 text-purple-400" />
+                  <Calendar className="w-5 h-5 text-purple-600" />
                   <span>Examination Management & Student Assignment</span>
                 </h3>
                 <p className="text-xs text-slate-400">
                   Configure department examinations and grant student-specific access authorization.
                 </p>
+                <div className="flex items-center space-x-2 mt-2 text-xs">
+                  <span className="px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700 font-semibold border border-blue-200">
+                    Total: {exams.length}
+                  </span>
+                  <span className="px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-semibold border border-emerald-200">
+                    Published: {exams.filter(e => e.status === 'published').length}
+                  </span>
+                  <span className="px-2.5 py-0.5 rounded-full bg-amber-50 text-amber-700 font-semibold border border-amber-200">
+                    Draft: {exams.filter(e => e.status === 'draft').length}
+                  </span>
+                  <span className="px-2.5 py-0.5 rounded-full bg-purple-50 text-purple-700 font-semibold border border-purple-200">
+                    Archived: {exams.filter(e => e.status === 'archived').length}
+                  </span>
+                </div>
               </div>
 
-              <button
-                onClick={openCreateExamModal}
-                className="px-4 py-2 bg-gradient-to-r from-purple-500 to-indigo-600 hover:from-purple-400 hover:to-indigo-500 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 shadow-lg shadow-purple-500/20 transition-all"
-              >
-                <Plus className="w-4 h-4" />
-                <span>+ Create Examination</span>
-              </button>
+              <div className="flex items-center space-x-2">
+                {selectedExamIds.length > 0 && (
+                  <button
+                    onClick={() => {
+                      setBulkDeleteConfig({
+                        type: 'exams',
+                        ids: selectedExamIds,
+                        title: `Bulk Delete ${selectedExamIds.length} Examination(s)`,
+                        description: `Permanently delete ${selectedExamIds.length} selected examinations from the system.`,
+                        itemCount: selectedExamIds.length,
+                        impactDetails: 'Examinations that contain completed student attempts or marks will be safely blocked by atomic backend dependency verification to preserve academic history.'
+                      });
+                      setBulkDeleteConfirmText('');
+                    }}
+                    className="px-3.5 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 shadow-sm transition-all cursor-pointer animate-pulse"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span>Delete Selected ({selectedExamIds.length})</span>
+                  </button>
+                )}
+                <button
+                  onClick={openCreateExamModal}
+                  className="px-4 py-2 bg-gradient-to-r from-purple-500 to-indigo-600 hover:from-purple-400 hover:to-indigo-500 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 shadow-lg shadow-purple-500/20 transition-all cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>+ Create Examination</span>
+                </button>
+              </div>
             </div>
+
+            {/* Selection Banner if exams are checked */}
+            {selectedExamIds.length > 0 && (
+              <div className="bg-rose-50 border border-rose-200 rounded-2xl p-3.5 flex flex-wrap items-center justify-between gap-3 text-xs text-rose-900 shadow-xs">
+                <div className="flex items-center space-x-2">
+                  <AlertTriangle className="w-4 h-4 text-rose-600" />
+                  <span className="font-bold">
+                    {selectedExamIds.length} examination{selectedExamIds.length > 1 ? 's' : ''} selected
+                  </span>
+                </div>
+                <div className="flex items-center space-x-2">
+                  {filteredExams.length > selectedExamIds.length && (
+                    <button
+                      onClick={() => {
+                        const allFilteredIds = filteredExams.map(e => e.id);
+                        setSelectedExamIds(Array.from(new Set([...selectedExamIds, ...allFilteredIds])));
+                      }}
+                      className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-xl text-xs font-semibold shadow-xs cursor-pointer"
+                    >
+                      Select All Matching ({filteredExams.length})
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      setBulkDeleteConfig({
+                        type: 'exams',
+                        ids: selectedExamIds,
+                        title: `Bulk Delete ${selectedExamIds.length} Examination(s)`,
+                        description: `Permanently delete ${selectedExamIds.length} selected examinations from the system.`,
+                        itemCount: selectedExamIds.length,
+                        impactDetails: 'Examinations that contain completed student attempts or marks will be safely blocked by atomic backend dependency verification to preserve academic history.'
+                      });
+                      setBulkDeleteConfirmText('');
+                    }}
+                    className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 shadow-xs cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete Selected ({selectedExamIds.length})</span>
+                  </button>
+                  <button
+                    onClick={() => setSelectedExamIds([])}
+                    className="px-2.5 py-1 text-slate-600 hover:text-slate-900 font-semibold cursor-pointer"
+                  >
+                    Deselect All
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Exam Filters */}
             <div className="bg-white border border-slate-200 rounded-2xl p-4 flex flex-wrap items-center gap-4">
@@ -2359,7 +3018,7 @@ export const AdminDashboard: React.FC = () => {
                   placeholder="Search examinations..."
                   value={examSearch}
                   onChange={(e) => setExamSearch(e.target.value)}
-                  className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-500"
+                  className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-500 focus:outline-none focus:border-sky-500"
                 />
               </div>
 
@@ -2382,6 +3041,23 @@ export const AdminDashboard: React.FC = () => {
                 <table className="w-full text-left text-xs">
                   <thead className="bg-slate-950 border-b border-slate-200 text-slate-400 font-semibold uppercase tracking-wider">
                     <tr>
+                      <th className="py-3.5 px-4 w-10">
+                        <input
+                          type="checkbox"
+                          checked={filteredExams.length > 0 && filteredExams.every(ex => selectedExamIds.includes(ex.id))}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              const ids = filteredExams.map(ex => ex.id);
+                              setSelectedExamIds(prev => Array.from(new Set([...prev, ...ids])));
+                            } else {
+                              const idsSet = new Set(filteredExams.map(ex => ex.id));
+                              setSelectedExamIds(prev => prev.filter(id => !idsSet.has(id)));
+                            }
+                          }}
+                          className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                          title="Select all matching exams on this page"
+                        />
+                      </th>
                       <th className="py-3.5 px-4">Exam Title</th>
                       <th className="py-3.5 px-4">Subject</th>
                       <th className="py-3.5 px-4">Department</th>
@@ -2393,92 +3069,100 @@ export const AdminDashboard: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/60">
-                    {exams.length === 0 ? (
+                    {filteredExams.length === 0 ? (
                       <tr>
-                        <td colSpan={8} className="py-8 text-center text-slate-500">
-                          No examinations created yet. Click "+ Create Examination" to configure a new test.
+                        <td colSpan={9} className="py-8 text-center text-slate-500">
+                          No examinations found matching your filter criteria. Click "+ Create Examination" to configure a new test.
                         </td>
                       </tr>
                     ) : (
-                      exams
-                        .filter((ex) => {
-                          const matchSearch = !examSearch || ex.title.toLowerCase().includes(examSearch.toLowerCase()) || (ex.subject_name && ex.subject_name.toLowerCase().includes(examSearch.toLowerCase()));
-                          const matchStatus = !examStatusFilter || ex.status === examStatusFilter;
-                          return matchSearch && matchStatus;
-                        })
-                        .map((ex) => (
-                          <tr key={ex.id} className="hover:bg-slate-800/30 transition-colors">
-                            <td className="py-3.5 px-4">
-                              <span className="font-bold text-slate-900 block">{ex.title}</span>
-                              <span className="text-[11px] text-slate-500 font-mono">Code: {ex.code || `EXAM-${ex.id}`}</span>
-                            </td>
-                            <td className="py-3.5 px-4 font-medium text-slate-300">{ex.subject_name || 'General'}</td>
-                            <td className="py-3.5 px-4 text-slate-400">{ex.department_name || 'All'}</td>
-                            <td className="py-3.5 px-4 text-slate-300">
-                              {ex.duration_minutes} Mins • {ex.total_questions} Questions
-                            </td>
-                            <td className="py-3.5 px-4">
-                              <span className="px-2.5 py-1 bg-sky-500/10 border border-blue-200 text-blue-600 font-bold rounded-lg">
-                                {ex.assigned_students_count || 0} Students
-                              </span>
-                            </td>
-                            <td className="py-3.5 px-4 text-slate-400">{ex.attempts_count || 0}</td>
-                            <td className="py-3.5 px-4">
-                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border uppercase ${
-                                ex.status === 'published'
-                                  ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                                  : ex.status === 'draft'
-                                    ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
-                                    : ex.status === 'archived'
-                                      ? 'bg-purple-500/10 text-purple-400 border-purple-500/20'
-                                      : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
-                              }`}>
-                                {ex.status}
-                              </span>
-                            </td>
-                            <td className="py-3.5 px-4 text-right space-x-1.5 whitespace-nowrap">
+                      filteredExams.map((ex) => (
+                        <tr key={ex.id} className="hover:bg-slate-800/30 transition-colors">
+                          <td className="py-3.5 px-4">
+                            <input
+                              type="checkbox"
+                              checked={selectedExamIds.includes(ex.id)}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setSelectedExamIds(prev => [...prev, ex.id]);
+                                } else {
+                                  setSelectedExamIds(prev => prev.filter(id => id !== ex.id));
+                                }
+                              }}
+                              className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                            />
+                          </td>
+                          <td className="py-3.5 px-4">
+                            <span className="font-bold text-slate-900 block">{ex.title}</span>
+                            <span className="text-[11px] text-slate-500 font-mono">Code: {ex.code || `EXAM-${ex.id}`}</span>
+                          </td>
+                          <td className="py-3.5 px-4 font-medium text-slate-700">{ex.subject_name || 'General'}</td>
+                          <td className="py-3.5 px-4 text-slate-600">{ex.department_name || 'All'}</td>
+                          <td className="py-3.5 px-4 text-slate-700">
+                            {ex.duration_minutes} Mins • {ex.total_questions} Questions
+                          </td>
+                          <td className="py-3.5 px-4">
+                            <span className="px-2.5 py-1 bg-sky-500/10 border border-blue-200 text-blue-600 font-bold rounded-lg">
+                              {ex.assigned_students_count || 0} Students
+                            </span>
+                          </td>
+                          <td className="py-3.5 px-4 text-slate-600">{ex.attempts_count || 0}</td>
+                          <td className="py-3.5 px-4">
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border uppercase ${
+                              ex.status === 'published'
+                                ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20'
+                                : ex.status === 'draft'
+                                  ? 'bg-amber-500/10 text-amber-600 border-amber-500/20'
+                                  : ex.status === 'archived'
+                                    ? 'bg-purple-500/10 text-purple-600 border-purple-500/20'
+                                    : 'bg-rose-500/10 text-rose-600 border-rose-500/20'
+                            }`}>
+                              {ex.status}
+                            </span>
+                          </td>
+                          <td className="py-3.5 px-4 text-right space-x-1.5 whitespace-nowrap">
+                            <button
+                              onClick={() => openAssignModal(ex)}
+                              className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold transition-colors inline-flex items-center space-x-1 cursor-pointer"
+                              title="Assign Students to Exam"
+                            >
+                              <UserCheck className="w-3.5 h-3.5" />
+                              <span>Assign</span>
+                            </button>
+                            <button
+                              onClick={() => handleToggleExamStatus(ex, ex.status === 'published' ? 'closed' : 'published')}
+                              className="p-1.5 text-slate-400 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors inline-flex items-center cursor-pointer"
+                              title={ex.status === 'published' ? 'Close Exam' : 'Publish Exam'}
+                            >
+                              <Power className="w-4 h-4" />
+                            </button>
+                            {ex.status === 'archived' ? (
                               <button
-                                onClick={() => openAssignModal(ex)}
-                                className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold transition-colors inline-flex items-center space-x-1"
-                                title="Assign Students to Exam"
+                                onClick={() => handleUnarchiveExam(ex)}
+                                className="p-1.5 text-purple-600 hover:text-purple-700 hover:bg-purple-50 rounded-lg transition-colors inline-flex items-center cursor-pointer"
+                                title="Unarchive Exam (Restore to Draft)"
                               >
-                                <UserCheck className="w-3.5 h-3.5" />
-                                <span>Assign</span>
+                                <ArchiveRestore className="w-4 h-4" />
                               </button>
+                            ) : (
                               <button
-                                onClick={() => handleToggleExamStatus(ex, ex.status === 'published' ? 'closed' : 'published')}
-                                className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors inline-flex items-center"
-                                title={ex.status === 'published' ? 'Close Exam' : 'Publish Exam'}
+                                onClick={() => handleOpenArchiveExam(ex)}
+                                className="p-1.5 text-amber-600 hover:text-amber-700 hover:bg-amber-50 rounded-lg transition-colors inline-flex items-center cursor-pointer"
+                                title="Archive Exam (Preserves all attempts & scores)"
                               >
-                                <Power className="w-4 h-4" />
+                                <Archive className="w-4 h-4" />
                               </button>
-                              {ex.status === 'archived' ? (
-                                <button
-                                  onClick={() => handleUnarchiveExam(ex)}
-                                  className="p-1.5 text-purple-400 hover:text-purple-300 hover:bg-purple-900/30 rounded-lg transition-colors inline-flex items-center"
-                                  title="Unarchive Exam (Restore to Draft)"
-                                >
-                                  <ArchiveRestore className="w-4 h-4" />
-                                </button>
-                              ) : (
-                                <button
-                                  onClick={() => handleOpenArchiveExam(ex)}
-                                  className="p-1.5 text-amber-400 hover:text-amber-300 hover:bg-amber-900/30 rounded-lg transition-colors inline-flex items-center"
-                                  title="Archive Exam (Preserves all attempts & scores)"
-                                >
-                                  <Archive className="w-4 h-4" />
-                                </button>
-                              )}
-                              <button
-                                onClick={() => handleOpenDeleteExam(ex)}
-                                className="p-1.5 text-rose-400 hover:text-rose-300 hover:bg-rose-900/30 rounded-lg transition-colors inline-flex items-center"
-                                title="Delete Examination"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            </td>
-                          </tr>
-                        ))
+                            )}
+                            <button
+                              onClick={() => handleOpenDeleteExam(ex)}
+                              className="p-1.5 text-rose-600 hover:text-rose-700 hover:bg-rose-50 rounded-lg transition-colors inline-flex items-center cursor-pointer"
+                              title="Delete Examination Safely"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </td>
+                        </tr>
+                      ))
                     )}
                   </tbody>
                 </table>
@@ -2497,25 +3181,100 @@ export const AdminDashboard: React.FC = () => {
                   <span>Student Assessment Records</span>
                 </h3>
                 <p className="text-xs text-slate-400">Review scores, cheating detection logs, and manage attempt history</p>
+                <div className="flex items-center space-x-2 mt-2 text-xs">
+                  <span className="px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700 font-semibold border border-blue-200">
+                    Total Records: {studentRecords.length}
+                  </span>
+                  <span className="px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-semibold border border-emerald-200">
+                    Completed: {studentRecords.filter(r => r.status === 'completed').length}
+                  </span>
+                </div>
               </div>
 
               <div className="flex items-center space-x-2">
+                {selectedRecordAttemptIds.length > 0 && (
+                  <button
+                    onClick={() => {
+                      setBulkDeleteConfig({
+                        type: 'attempts',
+                        ids: selectedRecordAttemptIds,
+                        title: `Bulk Delete ${selectedRecordAttemptIds.length} Assessment Attempt(s)`,
+                        description: `Permanently delete ${selectedRecordAttemptIds.length} selected student assessment attempts and their answer logs.`,
+                        itemCount: selectedRecordAttemptIds.length,
+                        impactDetails: 'This operation deletes recorded scores, student answers, and security audit logs for the selected attempts. Student profiles and examination definitions remain intact.'
+                      });
+                      setBulkDeleteConfirmText('');
+                    }}
+                    className="px-3.5 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 shadow-sm transition-all cursor-pointer animate-pulse"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span>Delete Selected ({selectedRecordAttemptIds.length})</span>
+                  </button>
+                )}
                 <button
                   onClick={handleExportExcel}
-                  className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 transition-colors"
+                  className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 transition-colors cursor-pointer"
                 >
                   <FileSpreadsheet className="w-4 h-4" />
                   <span>Excel Export</span>
                 </button>
                 <button
                   onClick={handleExportCSV}
-                  className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold flex items-center space-x-1.5 transition-colors border border-slate-200"
+                  className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-semibold flex items-center space-x-1.5 transition-colors border border-slate-700 cursor-pointer"
                 >
                   <Download className="w-4 h-4" />
                   <span>CSV Export</span>
                 </button>
               </div>
             </div>
+
+            {/* Selection Banner if attempts are checked */}
+            {selectedRecordAttemptIds.length > 0 && (
+              <div className="bg-rose-50 border border-rose-200 rounded-2xl p-3.5 flex flex-wrap items-center justify-between gap-3 text-xs text-rose-900 shadow-xs">
+                <div className="flex items-center space-x-2">
+                  <AlertTriangle className="w-4 h-4 text-rose-600" />
+                  <span className="font-bold">
+                    {selectedRecordAttemptIds.length} assessment attempt{selectedRecordAttemptIds.length > 1 ? 's' : ''} selected
+                  </span>
+                </div>
+                <div className="flex items-center space-x-2">
+                  {filteredRecords.filter(r => !!r.attempt_id).length > selectedRecordAttemptIds.length && (
+                    <button
+                      onClick={() => {
+                        const allFilteredIds = filteredRecords.filter(r => !!r.attempt_id).map(r => r.attempt_id as number);
+                        setSelectedRecordAttemptIds(Array.from(new Set([...selectedRecordAttemptIds, ...allFilteredIds])));
+                      }}
+                      className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-xl text-xs font-semibold shadow-xs cursor-pointer"
+                    >
+                      Select All Matching ({filteredRecords.filter(r => !!r.attempt_id).length})
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      setBulkDeleteConfig({
+                        type: 'attempts',
+                        ids: selectedRecordAttemptIds,
+                        title: `Bulk Delete ${selectedRecordAttemptIds.length} Assessment Attempt(s)`,
+                        description: `Permanently delete ${selectedRecordAttemptIds.length} selected student assessment attempts and their answer logs.`,
+                        itemCount: selectedRecordAttemptIds.length,
+                        impactDetails: 'This operation deletes recorded scores, student answers, and security audit logs for the selected attempts. Student profiles and examination definitions remain intact.'
+                      });
+                      setBulkDeleteConfirmText('');
+                    }}
+                    className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 shadow-xs cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete Selected ({selectedRecordAttemptIds.length})</span>
+                  </button>
+                  <button
+                    onClick={() => setSelectedRecordAttemptIds([])}
+                    className="px-2.5 py-1 text-slate-600 hover:text-slate-900 font-semibold cursor-pointer"
+                  >
+                    Deselect All
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Filter Bar */}
             <div className="bg-white border border-slate-200 rounded-2xl p-4 flex flex-wrap items-center gap-4">
@@ -2526,14 +3285,14 @@ export const AdminDashboard: React.FC = () => {
                   placeholder="Search student records..."
                   value={recordsSearch}
                   onChange={(e) => setRecordsSearch(e.target.value)}
-                  className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-500"
+                  className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-500 focus:outline-none focus:border-sky-500"
                 />
               </div>
 
               <select
                 value={recordsDeptFilter}
                 onChange={(e) => setRecordsDeptFilter(e.target.value)}
-                className="py-2 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-300 focus:outline-none"
+                className="py-2 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 focus:outline-none"
               >
                 <option value="">All Departments</option>
                 {departments.map((d) => (
@@ -2548,6 +3307,26 @@ export const AdminDashboard: React.FC = () => {
                 <table className="w-full text-left text-xs">
                   <thead className="bg-slate-950 border-b border-slate-200 text-slate-400 font-semibold uppercase tracking-wider">
                     <tr>
+                      <th className="py-3.5 px-4 w-10">
+                        <input
+                          type="checkbox"
+                          checked={
+                            filteredRecords.filter(r => !!r.attempt_id).length > 0 &&
+                            filteredRecords.filter(r => !!r.attempt_id).every(r => selectedRecordAttemptIds.includes(r.attempt_id as number))
+                          }
+                          onChange={(e) => {
+                            const eligible = filteredRecords.filter(r => !!r.attempt_id).map(r => r.attempt_id as number);
+                            if (e.target.checked) {
+                              setSelectedRecordAttemptIds(prev => Array.from(new Set([...prev, ...eligible])));
+                            } else {
+                              const eligibleSet = new Set(eligible);
+                              setSelectedRecordAttemptIds(prev => prev.filter(id => !eligibleSet.has(id)));
+                            }
+                          }}
+                          className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                          title="Select all attempts on this page"
+                        />
+                      </th>
                       <th className="py-3.5 px-4">Student Name & Roll</th>
                       <th className="py-3.5 px-4">Department</th>
                       <th className="py-3.5 px-4">Exam / Test</th>
@@ -2559,27 +3338,46 @@ export const AdminDashboard: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/60">
-                    {studentRecords
-                      .filter((rec) => {
-                        const matchSearch = !recordsSearch || rec.name.toLowerCase().includes(recordsSearch.toLowerCase()) || rec.enrollment_no.toLowerCase().includes(recordsSearch.toLowerCase());
-                        const matchDept = !recordsDeptFilter || rec.department === recordsDeptFilter;
-                        return matchSearch && matchDept;
-                      })
-                      .map((rec) => (
+                    {filteredRecords.length === 0 ? (
+                      <tr>
+                        <td colSpan={9} className="py-8 text-center text-slate-500">
+                          No student assessment records found.
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredRecords.map((rec) => (
                         <tr key={`${rec.student_id}-${rec.attempt_id || 0}`} className="hover:bg-slate-800/30 transition-colors">
+                          <td className="py-3.5 px-4">
+                            {rec.attempt_id ? (
+                              <input
+                                type="checkbox"
+                                checked={selectedRecordAttemptIds.includes(rec.attempt_id)}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setSelectedRecordAttemptIds(prev => [...prev, rec.attempt_id as number]);
+                                  } else {
+                                    setSelectedRecordAttemptIds(prev => prev.filter(id => id !== rec.attempt_id));
+                                  }
+                                }}
+                                className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                              />
+                            ) : (
+                              <span className="text-slate-300">-</span>
+                            )}
+                          </td>
                           <td className="py-3.5 px-4">
                             <span className="font-bold text-slate-900 block">{rec.name}</span>
                             <span className="font-mono text-blue-600 text-[11px]">{rec.enrollment_no}</span>
                           </td>
-                          <td className="py-3.5 px-4 text-slate-300">{rec.department}</td>
-                          <td className="py-3.5 px-4 text-slate-400">{rec.exam_title || 'General DSA Assessment'}</td>
+                          <td className="py-3.5 px-4 text-slate-600">{rec.department}</td>
+                          <td className="py-3.5 px-4 text-slate-600">{rec.exam_title || 'General DSA Assessment'}</td>
                           <td className="py-3.5 px-4 font-mono font-bold text-slate-900">{rec.score ?? '-'}</td>
-                          <td className="py-3.5 px-4 font-mono font-bold text-emerald-400">
+                          <td className="py-3.5 px-4 font-mono font-bold text-emerald-600">
                             {rec.percentage !== null ? `${rec.percentage.toFixed(1)}%` : '-'}
                           </td>
                           <td className="py-3.5 px-4">
                             <div className="flex items-center space-x-2">
-                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${(rec.tab_switch_count || 0) > 0 ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' : 'bg-slate-800 text-slate-400'
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${(rec.tab_switch_count || 0) > 0 ? 'bg-amber-500/10 text-amber-600 border border-amber-500/20' : 'bg-slate-100 text-slate-600'
                                 }`}>
                                 {rec.tab_switch_count || 0} Tab Switches
                               </span>
@@ -2587,34 +3385,35 @@ export const AdminDashboard: React.FC = () => {
                           </td>
                           <td className="py-3.5 px-4">
                             <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border uppercase ${rec.status === 'completed'
-                                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                                ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20'
                                 : rec.status === 'timed_out'
-                                  ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                                  ? 'bg-amber-500/10 text-amber-600 border-amber-500/20'
                                   : 'bg-blue-50 text-blue-700 border-blue-200'
                               }`}>
                               {rec.status}
                             </span>
                           </td>
-                          <td className="py-3.5 px-4 text-right space-x-1.5">
+                          <td className="py-3.5 px-4 text-right space-x-1.5 whitespace-nowrap">
                             <button
                               onClick={() => handleInspectAttempt(rec)}
-                              className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors"
+                              className="p-1.5 text-slate-400 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
                               title="Inspect Details"
                             >
                               <Eye className="w-4 h-4" />
                             </button>
                             {rec.attempt_id && (
                               <button
-                                onClick={() => setDeletingAttempt(rec)}
-                                className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors"
-                                title="Delete Attempt"
+                                onClick={() => openDeleteAttemptModal(rec)}
+                                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                                title="Delete Attempt Safely"
                               >
                                 <Trash2 className="w-4 h-4" />
                               </button>
                             )}
                           </td>
                         </tr>
-                      ))}
+                      ))
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -2624,52 +3423,320 @@ export const AdminDashboard: React.FC = () => {
 
         {/* 8. SETTINGS TAB */}
         {activeTab === 'settings' && (
-          <div className="max-w-2xl bg-white border border-slate-200 rounded-2xl p-6 space-y-6 shadow-xl">
-            <div>
-              <h3 className="text-lg font-bold text-slate-900 flex items-center space-x-2">
-                <Sliders className="w-5 h-5 text-blue-600" />
-                <span>Default Assessment Parameters</span>
-              </h3>
-              <p className="text-xs text-slate-400">
-                Configure default values for standard assessments. Historical attempt snapshots remain protected.
-              </p>
+          <div className="space-y-8">
+            {/* Default Assessment Parameters */}
+            <div className="max-w-2xl bg-white border border-slate-200 rounded-2xl p-6 space-y-6 shadow-xl">
+              <div>
+                <h3 className="text-lg font-bold text-slate-900 flex items-center space-x-2">
+                  <Sliders className="w-5 h-5 text-blue-600" />
+                  <span>Default Assessment Parameters</span>
+                </h3>
+                <p className="text-xs text-slate-400">
+                  Configure default values for standard assessments. Historical attempt snapshots remain protected.
+                </p>
+              </div>
+
+              <form onSubmit={handleSaveSettings} className="space-y-4 text-xs">
+                <div>
+                  <label className="block text-slate-700 font-semibold mb-1">Number of Questions</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={200}
+                    value={settingsQuestionCount}
+                    onChange={(e) => setSettingsQuestionCount(parseInt(e.target.value, 10))}
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium font-mono focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-slate-700 font-semibold mb-1">Time Limit (Minutes)</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={300}
+                    value={settingsTimeLimit}
+                    onChange={(e) => setSettingsTimeLimit(parseInt(e.target.value, 10))}
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium font-mono focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
+                  />
+                </div>
+
+                <div className="pt-2">
+                  <button
+                    type="submit"
+                    disabled={settingsSaving}
+                    className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl font-bold transition-colors cursor-pointer"
+                  >
+                    {settingsSaving ? 'Saving...' : 'Save Settings'}
+                  </button>
+                </div>
+              </form>
             </div>
 
-            <form onSubmit={handleSaveSettings} className="space-y-4 text-xs">
-              <div>
-                <label className="block text-slate-400 font-semibold mb-1">Number of Questions</label>
-                <input
-                  type="number"
-                  min={1}
-                  max={200}
-                  value={settingsQuestionCount}
-                  onChange={(e) => setSettingsQuestionCount(parseInt(e.target.value, 10))}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-mono"
-                />
+            {/* Institutional Staff & Administrator Accounts */}
+            <div className="bg-white border border-slate-200 rounded-2xl p-6 space-y-6 shadow-xl">
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div>
+                  <h3 className="text-lg font-bold text-slate-900 flex items-center space-x-2">
+                    <Users className="w-5 h-5 text-indigo-600" />
+                    <span>Institutional Staff & Administrator Accounts</span>
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Manage Super Admins, HODs, and Faculty accounts. Self-deletion and root admin deletion are permanently blocked.
+                  </p>
+                </div>
+
+                {selectedUserIds.length > 0 && (
+                  <button
+                    onClick={() => {
+                      setBulkDeleteConfig({
+                        type: 'users',
+                        ids: selectedUserIds,
+                        title: `Bulk Delete ${selectedUserIds.length} Administrator Account(s)`,
+                        description: `Permanently delete ${selectedUserIds.length} selected administrator/staff accounts from the system.`,
+                        itemCount: selectedUserIds.length,
+                        impactDetails: 'Active sessions and primary system administrator accounts cannot be deleted to guarantee system continuity.'
+                      });
+                      setBulkDeleteConfirmText('');
+                    }}
+                    className="px-3.5 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 shadow-sm transition-all cursor-pointer animate-pulse"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span>Delete Selected ({selectedUserIds.length})</span>
+                  </button>
+                )}
               </div>
 
-              <div>
-                <label className="block text-slate-400 font-semibold mb-1">Time Limit (Minutes)</label>
-                <input
-                  type="number"
-                  min={1}
-                  max={300}
-                  value={settingsTimeLimit}
-                  onChange={(e) => setSettingsTimeLimit(parseInt(e.target.value, 10))}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-mono"
-                />
-              </div>
+              {/* Selection Banner if users are checked */}
+              {selectedUserIds.length > 0 && (
+                <div className="bg-rose-50 border border-rose-200 rounded-2xl p-3.5 flex flex-wrap items-center justify-between gap-3 text-xs text-rose-900 shadow-xs">
+                  <div className="flex items-center space-x-2">
+                    <AlertTriangle className="w-4 h-4 text-rose-600" />
+                    <span className="font-bold">
+                      {selectedUserIds.length} staff account{selectedUserIds.length > 1 ? 's' : ''} selected
+                    </span>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <button
+                      onClick={() => {
+                        setBulkDeleteConfig({
+                          type: 'users',
+                          ids: selectedUserIds,
+                          title: `Bulk Delete ${selectedUserIds.length} Administrator Account(s)`,
+                          description: `Permanently delete ${selectedUserIds.length} selected administrator/staff accounts from the system.`,
+                          itemCount: selectedUserIds.length,
+                          impactDetails: 'Active sessions and primary system administrator accounts cannot be deleted to guarantee system continuity.'
+                        });
+                        setBulkDeleteConfirmText('');
+                      }}
+                      className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 shadow-xs cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Delete Selected ({selectedUserIds.length})</span>
+                    </button>
+                    <button
+                      onClick={() => setSelectedUserIds([])}
+                      className="px-2.5 py-1 text-slate-600 hover:text-slate-900 font-semibold cursor-pointer"
+                    >
+                      Deselect All
+                    </button>
+                  </div>
+                </div>
+              )}
 
-              <div className="pt-2">
+              {/* Admin Users Table */}
+              <div className="border border-slate-200 rounded-2xl overflow-hidden shadow-xs">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-950 border-b border-slate-200 text-slate-400 font-semibold uppercase tracking-wider">
+                      <tr>
+                        <th className="py-3 px-4 w-10">
+                          <input
+                            type="checkbox"
+                            checked={adminUsers.length > 0 && adminUsers.every(u => selectedUserIds.includes(u.id))}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedUserIds(adminUsers.map(u => u.id));
+                              } else {
+                                setSelectedUserIds([]);
+                              }
+                            }}
+                            className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                            title="Select all staff accounts"
+                          />
+                        </th>
+                        <th className="py-3 px-4">Full Name & Username</th>
+                        <th className="py-3 px-4">Role</th>
+                        <th className="py-3 px-4">Assigned Department</th>
+                        <th className="py-3 px-4">Status</th>
+                        <th className="py-3 px-4 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {adminUsers.length === 0 ? (
+                        <tr>
+                          <td colSpan={6} className="py-6 text-center text-slate-500">
+                            No administrative accounts found.
+                          </td>
+                        </tr>
+                      ) : (
+                        adminUsers.map((u) => {
+                          const isSelf = currentUser?.username === u.username;
+                          const isRoot = u.username === 'admin';
+                          return (
+                            <tr key={u.id} className="hover:bg-slate-50 transition-colors">
+                              <td className="py-3 px-4">
+                                <input
+                                  type="checkbox"
+                                  disabled={isSelf || isRoot}
+                                  checked={selectedUserIds.includes(u.id)}
+                                  onChange={(e) => {
+                                    if (e.target.checked) {
+                                      setSelectedUserIds(prev => [...prev, u.id]);
+                                    } else {
+                                      setSelectedUserIds(prev => prev.filter(id => id !== u.id));
+                                    }
+                                  }}
+                                  className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer disabled:opacity-30"
+                                />
+                              </td>
+                              <td className="py-3 px-4">
+                                <span className="font-bold text-slate-900 block">{u.full_name || u.username}</span>
+                                <span className="text-[11px] text-slate-500 font-mono">@{u.username}</span>
+                              </td>
+                              <td className="py-3 px-4">
+                                <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                                  u.role === 'super_admin'
+                                    ? 'bg-purple-50 text-purple-700 border border-purple-200'
+                                    : u.role === 'hod'
+                                      ? 'bg-amber-50 text-amber-700 border border-amber-200'
+                                      : 'bg-blue-50 text-blue-700 border border-blue-200'
+                                }`}>
+                                  {u.role.replace('_', ' ')}
+                                </span>
+                              </td>
+                              <td className="py-3 px-4 text-slate-600">{u.department_name || (u.department_id ? `Dept #${u.department_id}` : 'All Departments')}</td>
+                              <td className="py-3 px-4">
+                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                                  u.is_active
+                                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                    : 'bg-slate-100 text-slate-500 border-slate-200'
+                                }`}>
+                                  {u.is_active ? 'Active' : 'Inactive'}
+                                </span>
+                              </td>
+                              <td className="py-3 px-4 text-right">
+                                {isSelf ? (
+                                  <span className="text-[11px] font-semibold text-slate-400 italic">Current Session</span>
+                                ) : isRoot ? (
+                                  <span className="text-[11px] font-semibold text-slate-400 italic">Protected Root</span>
+                                ) : (
+                                  <button
+                                    onClick={() => handleDeleteUser(u)}
+                                    className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                                    title="Delete Administrator Safely"
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            {/* Database Safety & Verified System Backups */}
+            <div className="bg-white border border-slate-200 rounded-2xl p-6 space-y-6 shadow-xl">
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div>
+                  <h3 className="text-lg font-bold text-slate-900 flex items-center space-x-2">
+                    <Shield className="w-5 h-5 text-emerald-600" />
+                    <span>Database Safety & Verified System Backups</span>
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Create verified point-in-time snapshots with cryptographic SHA-256 integrity checksums prior to large deletions.
+                  </p>
+                </div>
+
                 <button
-                  type="submit"
-                  disabled={settingsSaving}
-                  className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl font-bold transition-colors"
+                  onClick={handleCreateBackup}
+                  disabled={creatingBackup}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 transition-colors shadow-xs cursor-pointer"
                 >
-                  {settingsSaving ? 'Saving...' : 'Save Settings'}
+                  <Download className="w-4 h-4" />
+                  <span>{creatingBackup ? 'Creating Snapshot...' : 'Create Verified Backup Now'}</span>
                 </button>
               </div>
-            </form>
+
+              {verifiedBackupResult && (
+                <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 flex items-start space-x-3 text-xs text-emerald-900 shadow-xs">
+                  <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <p className="font-bold">Cryptographic Integrity Verified Successfully</p>
+                    <p className="text-emerald-700">
+                      File <span className="font-mono font-semibold">{verifiedBackupResult.filename}</span> matches calculated SHA-256 hash.
+                      Total verified records: <span className="font-bold">{verifiedBackupResult.recorded_total_records}</span>.
+                    </p>
+                    <p className="font-mono text-[10px] text-emerald-600 break-all">
+                      SHA256: {verifiedBackupResult.calculated_sha256}
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Backups List */}
+              <div className="border border-slate-200 rounded-2xl overflow-hidden shadow-xs">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-950 border-b border-slate-200 text-slate-400 font-semibold uppercase tracking-wider">
+                      <tr>
+                        <th className="py-3 px-4">Backup Archive</th>
+                        <th className="py-3 px-4">Timestamp</th>
+                        <th className="py-3 px-4">Size</th>
+                        <th className="py-3 px-4">Total Records</th>
+                        <th className="py-3 px-4">SHA-256 Checksum</th>
+                        <th className="py-3 px-4 text-right">Verification</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {systemBackups.length === 0 ? (
+                        <tr>
+                          <td colSpan={6} className="py-6 text-center text-slate-500">
+                            No system backups created yet. Click "Create Verified Backup Now" to generate an archive.
+                          </td>
+                        </tr>
+                      ) : (
+                        systemBackups.map((b, idx) => (
+                          <tr key={idx} className="hover:bg-slate-50 transition-colors">
+                            <td className="py-3 px-4 font-mono font-bold text-slate-900">{b.filename}</td>
+                            <td className="py-3 px-4 text-slate-600">{new Date(b.created_at).toLocaleString()}</td>
+                            <td className="py-3 px-4 text-slate-600 font-mono">{(b.size_bytes / 1024).toFixed(1)} KB</td>
+                            <td className="py-3 px-4 font-bold text-slate-900">{b.total_records} records</td>
+                            <td className="py-3 px-4 font-mono text-[10px] text-slate-500 max-w-xs truncate" title={b.sha256}>
+                              {b.sha256 ? `${b.sha256.substring(0, 16)}...` : 'N/A'}
+                            </td>
+                            <td className="py-3 px-4 text-right">
+                              <button
+                                onClick={() => handleVerifyBackup(b.filename)}
+                                disabled={verifyingBackupFilename === b.filename}
+                                className="px-3 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg text-xs font-bold transition-colors cursor-pointer disabled:opacity-50"
+                              >
+                                {verifyingBackupFilename === b.filename ? 'Verifying...' : 'Verify Integrity'}
+                              </button>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
           </div>
         )}
 
@@ -2736,14 +3803,14 @@ export const AdminDashboard: React.FC = () => {
                 <Building className="w-5 h-5 text-blue-600" />
                 <span>+ Add Department</span>
               </h4>
-              <button onClick={() => setShowAddDeptModal(false)} className="text-slate-400 hover:text-white">
+              <button onClick={() => setShowAddDeptModal(false)} className="text-slate-400 hover:text-slate-600 transition-colors">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             <form onSubmit={handleAddDepartment} className="space-y-4 text-xs">
               <div>
-                <label className="block text-slate-400 font-semibold mb-1">Department Full Name *</label>
+                <label className="block text-slate-700 font-semibold mb-1">Department Full Name *</label>
                 <input
                   type="text"
                   required
@@ -2751,7 +3818,7 @@ export const AdminDashboard: React.FC = () => {
                   placeholder="e.g. Computer Science & Engineering"
                   value={newDeptName}
                   onChange={(e) => setNewDeptName(e.target.value)}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white text-xs focus:outline-none focus:border-sky-500"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium text-xs placeholder-slate-400 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                 />
               </div>
 
@@ -2759,7 +3826,7 @@ export const AdminDashboard: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setShowAddDeptModal(false)}
-                  className="flex-1 py-2.5 bg-slate-800 text-slate-300 rounded-xl font-semibold"
+                  className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-semibold transition-colors"
                 >
                   Cancel
                 </button>
@@ -2787,41 +3854,41 @@ export const AdminDashboard: React.FC = () => {
                 <BookOpen className="w-5 h-5 text-blue-600" />
                 <span>{editingSubject ? 'Edit Subject' : '+ Add Subject (Manual)'}</span>
               </h4>
-              <button onClick={() => setShowAddSubjectModal(false)} className="text-slate-400 hover:text-white">
+              <button onClick={() => setShowAddSubjectModal(false)} className="text-slate-400 hover:text-slate-600 transition-colors">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             <form onSubmit={handleSaveSubject} className="space-y-4 text-xs">
               <div>
-                <label className="block text-slate-400 font-semibold mb-1">Subject Name *</label>
+                <label className="block text-slate-700 font-semibold mb-1">Subject Name *</label>
                 <input
                   type="text"
                   required
                   placeholder="e.g. Data Structures"
                   value={subjectFormName}
                   onChange={(e) => setSubjectFormName(e.target.value)}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium placeholder-slate-400 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                 />
               </div>
 
               <div>
-                <label className="block text-slate-400 font-semibold mb-1">Subject Code *</label>
+                <label className="block text-slate-700 font-semibold mb-1">Subject Code *</label>
                 <input
                   type="text"
                   required
                   placeholder="e.g. CS301"
                   value={subjectFormCode}
                   onChange={(e) => setSubjectFormCode(e.target.value)}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-mono"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium font-mono placeholder-slate-400 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                 />
               </div>
 
               <div>
                 <div className="flex items-center justify-between mb-1">
-                  <label className="block text-slate-400 font-semibold">Department *</label>
+                  <label className="block text-slate-700 font-semibold">Department *</label>
                   {currentUser?.role === 'hod' && (
-                    <span className="text-amber-400 text-[10px] flex items-center gap-1 font-semibold">
+                    <span className="text-amber-600 text-[10px] flex items-center gap-1 font-semibold">
                       <Lock className="w-2.5 h-2.5" /> Locked to {currentUser.department_name || 'your department'}
                     </span>
                   )}
@@ -2831,7 +3898,7 @@ export const AdminDashboard: React.FC = () => {
                   disabled={currentUser?.role === 'hod'}
                   value={subjectFormDeptId}
                   onChange={(e) => setSubjectFormDeptId(e.target.value ? Number(e.target.value) : '')}
-                  className={`w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white ${
+                  className={`w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 ${
                     currentUser?.role === 'hod' ? 'opacity-80 cursor-not-allowed' : ''
                   }`}
                 >
@@ -2849,7 +3916,7 @@ export const AdminDashboard: React.FC = () => {
               {/* Dependent Academic Selection: Program -> Year -> Semester */}
               <div className="grid grid-cols-3 gap-2">
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Program</label>
+                  <label className="block text-slate-700 font-semibold mb-1">Program</label>
                   <select
                     value={subjectFormProgId}
                     onChange={(e) => {
@@ -2861,7 +3928,7 @@ export const AdminDashboard: React.FC = () => {
                       const validSems = getFilteredSemesters(defaultYear, newPId);
                       setSubjectFormSemId(validSems.length > 0 ? validSems[0].id : '');
                     }}
-                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white text-[11px]"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium text-[11px] focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                   >
                     <option value="">Select Program...</option>
                     {programs.map((p) => (
@@ -2870,7 +3937,7 @@ export const AdminDashboard: React.FC = () => {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Year</label>
+                  <label className="block text-slate-700 font-semibold mb-1">Year</label>
                   <select
                     value={subjectFormYearId}
                     onChange={(e) => {
@@ -2879,7 +3946,7 @@ export const AdminDashboard: React.FC = () => {
                       const validSems = getFilteredSemesters(newYId, subjectFormProgId);
                       setSubjectFormSemId(validSems.length > 0 ? validSems[0].id : '');
                     }}
-                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white text-[11px]"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium text-[11px] focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                   >
                     <option value="">Select Year...</option>
                     {getFilteredYears(subjectFormProgId).map((y) => (
@@ -2888,11 +3955,11 @@ export const AdminDashboard: React.FC = () => {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Semester</label>
+                  <label className="block text-slate-700 font-semibold mb-1">Semester</label>
                   <select
                     value={subjectFormSemId}
                     onChange={(e) => setSubjectFormSemId(e.target.value ? Number(e.target.value) : '')}
-                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white text-[11px]"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium text-[11px] focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                   >
                     <option value="">Select Sem...</option>
                     {getFilteredSemesters(subjectFormYearId, subjectFormProgId).map((s) => (
@@ -2906,7 +3973,7 @@ export const AdminDashboard: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setShowAddSubjectModal(false)}
-                  className="flex-1 py-2.5 bg-slate-800 text-slate-300 rounded-xl font-semibold"
+                  className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-semibold transition-colors"
                 >
                   Cancel
                 </button>
@@ -2933,42 +4000,42 @@ export const AdminDashboard: React.FC = () => {
                 <UserPlus className="w-5 h-5 text-blue-600" />
                 <span>{editingStudent ? 'Edit Student' : '+ Add Enrolled Student'}</span>
               </h4>
-              <button onClick={() => setShowAddStudentModal(false)} className="text-slate-400 hover:text-white">
+              <button onClick={() => setShowAddStudentModal(false)} className="text-slate-400 hover:text-slate-600 transition-colors">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             <form onSubmit={handleSaveStudent} className="space-y-3 text-xs">
               <div>
-                <label className="block text-slate-400 font-semibold mb-1">Roll / Enrollment No *</label>
+                <label className="block text-slate-700 font-semibold mb-1">Roll / Enrollment No *</label>
                 <input
                   type="text"
                   required
                   placeholder="e.g. BT26F05F001"
                   value={stFormEnrollment}
                   onChange={(e) => setStFormEnrollment(e.target.value)}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-mono"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium font-mono placeholder-slate-400 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                 />
               </div>
 
               <div>
-                <label className="block text-slate-400 font-semibold mb-1">Student Full Name *</label>
+                <label className="block text-slate-700 font-semibold mb-1">Student Full Name *</label>
                 <input
                   type="text"
                   required
                   placeholder="e.g. Alex Mercer"
                   value={stFormName}
                   onChange={(e) => setStFormName(e.target.value)}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium placeholder-slate-400 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <div className="flex items-center justify-between mb-1">
-                    <label className="block text-slate-400 font-semibold">Department *</label>
+                    <label className="block text-slate-700 font-semibold">Department *</label>
                     {currentUser?.role === 'hod' && (
-                      <span className="text-amber-400 text-[10px] flex items-center gap-1 font-semibold">
+                      <span className="text-amber-600 text-[10px] flex items-center gap-1 font-semibold">
                         <Lock className="w-2.5 h-2.5" /> Locked
                       </span>
                     )}
@@ -2978,7 +4045,7 @@ export const AdminDashboard: React.FC = () => {
                     disabled={currentUser?.role === 'hod'}
                     value={stFormDept}
                     onChange={(e) => setStFormDept(e.target.value)}
-                    className={`w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white ${
+                    className={`w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 ${
                       currentUser?.role === 'hod' ? 'opacity-80 cursor-not-allowed' : ''
                     }`}
                   >
@@ -2989,11 +4056,11 @@ export const AdminDashboard: React.FC = () => {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Gender</label>
+                  <label className="block text-slate-700 font-semibold mb-1">Gender</label>
                   <select
                     value={stFormGender}
                     onChange={(e) => setStFormGender(e.target.value)}
-                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white"
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                   >
                     <option value="Male">Male</option>
                     <option value="Female">Female</option>
@@ -3005,7 +4072,7 @@ export const AdminDashboard: React.FC = () => {
               {/* Dependent Program, Year, Semester */}
               <div className="grid grid-cols-3 gap-2">
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Program</label>
+                  <label className="block text-slate-700 font-semibold mb-1">Program</label>
                   <select
                     value={stFormProg}
                     onChange={(e) => {
@@ -3015,14 +4082,14 @@ export const AdminDashboard: React.FC = () => {
                       setStFormYear(defaultYear);
                       setStFormSem('Semester 1');
                     }}
-                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white text-[11px]"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium text-[11px] focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                   >
                     <option value="UG">UG (B.Tech)</option>
                     <option value="M.Tech">M.Tech</option>
                   </select>
                 </div>
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Year</label>
+                  <label className="block text-slate-700 font-semibold mb-1">Year</label>
                   <select
                     value={stFormYear}
                     onChange={(e) => {
@@ -3031,7 +4098,7 @@ export const AdminDashboard: React.FC = () => {
                       const sems = getStudentSemestersForYear(stFormProg, newYear);
                       setStFormSem(sems[0]);
                     }}
-                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white text-[11px]"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium text-[11px] focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                   >
                     {stFormProg === 'UG' ? (
                       <>
@@ -3049,11 +4116,11 @@ export const AdminDashboard: React.FC = () => {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Semester</label>
+                  <label className="block text-slate-700 font-semibold mb-1">Semester</label>
                   <select
                     value={stFormSem}
                     onChange={(e) => setStFormSem(e.target.value)}
-                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white text-[11px]"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium text-[11px] focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                   >
                     {getStudentSemestersForYear(stFormProg, stFormYear).map((sem) => (
                       <option key={sem} value={sem}>{sem}</option>
@@ -3063,13 +4130,13 @@ export const AdminDashboard: React.FC = () => {
               </div>
 
               <div>
-                <label className="block text-slate-400 font-semibold mb-1">Password or Secure PIN</label>
+                <label className="block text-slate-700 font-semibold mb-1">Password or Secure PIN</label>
                 <input
                   type="password"
                   placeholder="Default (Roll Number)"
                   value={stFormPassword}
                   onChange={(e) => setStFormPassword(e.target.value)}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium placeholder-slate-400 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                 />
               </div>
 
@@ -3077,7 +4144,7 @@ export const AdminDashboard: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setShowAddStudentModal(false)}
-                  className="flex-1 py-2.5 bg-slate-800 text-slate-300 rounded-xl font-semibold"
+                  className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-semibold transition-colors"
                 >
                   Cancel
                 </button>
@@ -3104,21 +4171,21 @@ export const AdminDashboard: React.FC = () => {
                 <UploadCloud className="w-5 h-5 text-emerald-400" />
                 <span>Bulk Student Roll-List Import</span>
               </h4>
-              <button onClick={() => setShowBulkImportModal(false)} className="text-slate-400 hover:text-white">
+              <button onClick={() => setShowBulkImportModal(false)} className="text-slate-400 hover:text-slate-600 transition-colors">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             <form onSubmit={handleBulkImportStudents} className="space-y-4 text-xs">
-              <p className="text-slate-400">
-                Select target academic group and upload student roll list file (<span className="text-white font-semibold">CSV, Excel XLSX, or PDF roll-list</span>).
+              <p className="text-slate-600">
+                Select target academic group and upload student roll list file (<span className="text-slate-900 font-semibold">CSV, Excel XLSX, or PDF roll-list</span>).
               </p>
 
               <div>
                 <div className="flex items-center justify-between mb-1">
-                  <label className="block text-slate-400 font-semibold">Target Department *</label>
+                  <label className="block text-slate-700 font-semibold">Target Department *</label>
                   {currentUser?.role === 'hod' && (
-                    <span className="text-amber-400 text-[10px] flex items-center gap-1 font-semibold">
+                    <span className="text-amber-600 text-[10px] flex items-center gap-1 font-semibold">
                       <Lock className="w-2.5 h-2.5" /> Locked to {currentUser.department_name || 'your department'}
                     </span>
                   )}
@@ -3128,7 +4195,7 @@ export const AdminDashboard: React.FC = () => {
                   disabled={currentUser?.role === 'hod'}
                   value={importDept}
                   onChange={(e) => setImportDept(e.target.value)}
-                  className={`w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white ${
+                  className={`w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 ${
                     currentUser?.role === 'hod' ? 'opacity-80 cursor-not-allowed' : ''
                   }`}
                 >
@@ -3141,7 +4208,7 @@ export const AdminDashboard: React.FC = () => {
 
               <div className="grid grid-cols-3 gap-2">
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Program</label>
+                  <label className="block text-slate-700 font-semibold mb-1">Program</label>
                   <select
                     value={importProg}
                     onChange={(e) => {
@@ -3149,14 +4216,14 @@ export const AdminDashboard: React.FC = () => {
                       setImportYear(e.target.value === 'UG' ? '1st Year' : 'M.Tech 1st Year');
                       setImportSem('Semester 1');
                     }}
-                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white text-[11px]"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium text-[11px] focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                   >
                     <option value="UG">UG</option>
                     <option value="M.Tech">M.Tech</option>
                   </select>
                 </div>
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Year</label>
+                  <label className="block text-slate-700 font-semibold mb-1">Year</label>
                   <select
                     value={importYear}
                     onChange={(e) => {
@@ -3164,7 +4231,7 @@ export const AdminDashboard: React.FC = () => {
                       const sems = getStudentSemestersForYear(importProg, e.target.value);
                       setImportSem(sems[0]);
                     }}
-                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white text-[11px]"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium text-[11px] focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                   >
                     {importProg === 'UG' ? (
                       <>
@@ -3182,11 +4249,11 @@ export const AdminDashboard: React.FC = () => {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Semester</label>
+                  <label className="block text-slate-700 font-semibold mb-1">Semester</label>
                   <select
                     value={importSem}
                     onChange={(e) => setImportSem(e.target.value)}
-                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white text-[11px]"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium text-[11px] focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                   >
                     {getStudentSemestersForYear(importProg, importYear).map(s => (
                       <option key={s} value={s}>{s}</option>
@@ -3196,13 +4263,13 @@ export const AdminDashboard: React.FC = () => {
               </div>
 
               <div>
-                <label className="block text-slate-400 font-semibold mb-1">Upload File (CSV, XLSX, or PDF) *</label>
+                <label className="block text-slate-700 font-semibold mb-1">Upload File (CSV, XLSX, or PDF) *</label>
                 <input
                   type="file"
                   required
                   accept=".csv,.xlsx,.xls,.pdf"
                   onChange={(e) => setImportFile(e.target.files ? e.target.files[0] : null)}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-300"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-700 font-medium file:mr-3 file:py-1 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
                 />
               </div>
 
@@ -3210,7 +4277,7 @@ export const AdminDashboard: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setShowBulkImportModal(false)}
-                  className="flex-1 py-2.5 bg-slate-800 text-slate-300 rounded-xl font-semibold"
+                  className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-semibold transition-colors"
                 >
                   Cancel
                 </button>
@@ -3444,30 +4511,30 @@ export const AdminDashboard: React.FC = () => {
                 <Calendar className="w-5 h-5 text-purple-400" />
                 <span>{editingExam ? 'Edit Examination' : '+ Create New Examination'}</span>
               </h4>
-              <button onClick={() => setShowCreateExamModal(false)} className="text-slate-400 hover:text-white">
+              <button onClick={() => setShowCreateExamModal(false)} className="text-slate-400 hover:text-slate-600 transition-colors">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             <form onSubmit={handleSaveExam} className="space-y-3.5 text-xs">
               <div>
-                <label className="block text-slate-400 font-semibold mb-1">Exam Title *</label>
+                <label className="block text-slate-700 font-semibold mb-1">Exam Title *</label>
                 <input
                   type="text"
                   required
                   placeholder="e.g. Data Structures Midterm Test"
                   value={examFormTitle}
                   onChange={(e) => setExamFormTitle(e.target.value)}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium placeholder-slate-400 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                 />
               </div>
 
               {/* Department First per Section 18 & 19 */}
               <div>
                 <div className="flex items-center justify-between mb-1">
-                  <label className="block text-slate-400 font-semibold">Department *</label>
+                  <label className="block text-slate-700 font-semibold">Department *</label>
                   {currentUser?.role === 'hod' && (
-                    <span className="text-amber-400 text-[10px] flex items-center gap-1 font-semibold">
+                    <span className="text-amber-600 text-[10px] flex items-center gap-1 font-semibold">
                       <Lock className="w-2.5 h-2.5" /> Locked to {currentUser.department_name || 'your department'}
                     </span>
                   )}
@@ -3477,7 +4544,7 @@ export const AdminDashboard: React.FC = () => {
                   disabled={currentUser?.role === 'hod'}
                   value={examFormDeptId}
                   onChange={(e) => handleExamDeptChange(e.target.value ? Number(e.target.value) : '')}
-                  className={`w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white ${
+                  className={`w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 ${
                     currentUser?.role === 'hod' ? 'opacity-80 cursor-not-allowed' : ''
                   }`}
                 >
@@ -3491,7 +4558,7 @@ export const AdminDashboard: React.FC = () => {
               {/* Program, Year, Semester Hierarchy for Subject Filtering */}
               <div className="grid grid-cols-3 gap-2">
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Program</label>
+                  <label className="block text-slate-700 font-semibold mb-1">Program</label>
                   <select
                     value={examFormProgId}
                     onChange={(e) => {
@@ -3503,7 +4570,7 @@ export const AdminDashboard: React.FC = () => {
                       const validSems = getFilteredSemesters(defaultYear, newPId);
                       setExamFormSemId(validSems.length > 0 ? validSems[0].id : '');
                     }}
-                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white text-[11px]"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium text-[11px] focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                   >
                     <option value="">All Programs</option>
                     {programs.map((p) => (
@@ -3512,7 +4579,7 @@ export const AdminDashboard: React.FC = () => {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Year</label>
+                  <label className="block text-slate-700 font-semibold mb-1">Year</label>
                   <select
                     value={examFormYearId}
                     onChange={(e) => {
@@ -3521,7 +4588,7 @@ export const AdminDashboard: React.FC = () => {
                       const validSems = getFilteredSemesters(newYId, examFormProgId);
                       setExamFormSemId(validSems.length > 0 ? validSems[0].id : '');
                     }}
-                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white text-[11px]"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium text-[11px] focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                   >
                     <option value="">All Years</option>
                     {getFilteredYears(examFormProgId).map((y) => (
@@ -3530,11 +4597,11 @@ export const AdminDashboard: React.FC = () => {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Semester</label>
+                  <label className="block text-slate-700 font-semibold mb-1">Semester</label>
                   <select
                     value={examFormSemId}
                     onChange={(e) => setExamFormSemId(e.target.value ? Number(e.target.value) : '')}
-                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white text-[11px]"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium text-[11px] focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                   >
                     <option value="">All Semesters</option>
                     {getFilteredSemesters(examFormYearId, examFormProgId).map((s) => (
@@ -3546,13 +4613,13 @@ export const AdminDashboard: React.FC = () => {
 
               {/* Subject Selection strictly filtered by Department per Section 19 & 20 */}
               <div>
-                <label className="block text-slate-400 font-semibold mb-1">Subject Association *</label>
+                <label className="block text-slate-700 font-semibold mb-1">Subject Association *</label>
                 <select
                   required
                   value={examFormSubjectId}
                   onChange={(e) => setExamFormSubjectId(e.target.value ? Number(e.target.value) : '')}
                   disabled={!examFormDeptId}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <option value="">
                     {!examFormDeptId ? 'Please select a department above first...' : 'Select Subject...'}
@@ -3574,66 +4641,66 @@ export const AdminDashboard: React.FC = () => {
               {/* Duration, Questions, Marks, Pass % */}
               <div className="grid grid-cols-4 gap-2">
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Duration (Mins)</label>
+                  <label className="block text-slate-700 font-semibold mb-1">Duration (Mins)</label>
                   <input
                     type="number"
                     min={1}
                     value={examFormDuration}
                     onChange={(e) => setExamFormDuration(parseInt(e.target.value, 10) || 60)}
-                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                   />
                 </div>
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Questions</label>
+                  <label className="block text-slate-700 font-semibold mb-1">Questions</label>
                   <input
                     type="number"
                     min={1}
                     value={examFormQuestionsCount}
                     onChange={(e) => setExamFormQuestionsCount(parseInt(e.target.value, 10) || 25)}
-                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                   />
                 </div>
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Marks/Q</label>
+                  <label className="block text-slate-700 font-semibold mb-1">Marks/Q</label>
                   <input
                     type="number"
                     min={1}
                     value={examFormMarksPerQ}
                     onChange={(e) => setExamFormMarksPerQ(parseInt(e.target.value, 10) || 1)}
-                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                   />
                 </div>
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Pass %</label>
+                  <label className="block text-slate-700 font-semibold mb-1">Pass %</label>
                   <input
                     type="number"
                     min={1}
                     max={100}
                     value={examFormPassingPct}
                     onChange={(e) => setExamFormPassingPct(parseFloat(e.target.value) || 40)}
-                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                   />
                 </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Question Selection Mode</label>
+                  <label className="block text-slate-700 font-semibold mb-1">Question Selection Mode</label>
                   <select
                     value={examFormSelectionMode}
                     onChange={(e) => setExamFormSelectionMode(e.target.value as any)}
-                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white"
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                   >
                     <option value="random">Random from Subject Bank</option>
                     <option value="manual">Manual Selection</option>
                   </select>
                 </div>
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Initial Status</label>
+                  <label className="block text-slate-700 font-semibold mb-1">Initial Status</label>
                   <select
                     value={examFormStatus}
                     onChange={(e) => setExamFormStatus(e.target.value)}
-                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white"
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                   >
                     <option value="published">Published (Available)</option>
                     <option value="draft">Draft (Hidden)</option>
@@ -3644,21 +4711,21 @@ export const AdminDashboard: React.FC = () => {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Start Date (Optional)</label>
+                  <label className="block text-slate-700 font-semibold mb-1">Start Date (Optional)</label>
                   <input
                     type="date"
                     value={examFormStartDate}
                     onChange={(e) => setExamFormStartDate(e.target.value)}
-                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                   />
                 </div>
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">End Date (Optional)</label>
+                  <label className="block text-slate-700 font-semibold mb-1">End Date (Optional)</label>
                   <input
                     type="date"
                     value={examFormEndDate}
                     onChange={(e) => setExamFormEndDate(e.target.value)}
-                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                   />
                 </div>
               </div>
@@ -3667,7 +4734,7 @@ export const AdminDashboard: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setShowCreateExamModal(false)}
-                  className="flex-1 py-2.5 bg-slate-800 text-slate-300 rounded-xl font-semibold"
+                  className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-semibold transition-colors"
                 >
                   Cancel
                 </button>
@@ -3699,7 +4766,7 @@ export const AdminDashboard: React.FC = () => {
                   CRITICAL: Only selected students will have backend authorization to see and take this exam.
                 </p>
               </div>
-              <button onClick={() => setAssigningExam(null)} className="text-slate-400 hover:text-white">
+              <button onClick={() => setAssigningExam(null)} className="text-slate-400 hover:text-slate-600 transition-colors">
                 <X className="w-5 h-5" />
               </button>
             </div>
@@ -3713,14 +4780,14 @@ export const AdminDashboard: React.FC = () => {
                   placeholder="Filter students by roll or name..."
                   value={assignSearch}
                   onChange={(e) => setAssignSearch(e.target.value)}
-                  className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-white"
+                  className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium placeholder-slate-400 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                 />
               </div>
 
               <select
                 value={assignFilterDept}
                 onChange={(e) => setAssignFilterDept(e.target.value)}
-                className="py-1.5 px-3 bg-slate-50 border border-slate-200 rounded-xl text-white"
+                className="py-1.5 px-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-700 font-medium focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
               >
                 <option value="">All Departments</option>
                 {departments.map((d) => (
@@ -3744,18 +4811,18 @@ export const AdminDashboard: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setSelectedStudentIdsToAssign([])}
-                  className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-400 rounded-lg font-semibold"
+                  className="px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 rounded-lg font-semibold transition-colors"
                 >
                   Clear All
                 </button>
-                <span className="text-slate-400 font-bold ml-2">
+                <span className="text-slate-600 font-bold ml-2">
                   {selectedStudentIdsToAssign.length} Selected (Previously Assigned: {assignedStudents.length})
                 </span>
               </div>
             </div>
 
             {/* Students Selection List */}
-            <div className="flex-1 overflow-y-auto border border-slate-200 rounded-2xl divide-y divide-slate-800/60 bg-slate-950/60 text-xs">
+            <div className="flex-1 overflow-y-auto border border-slate-200 rounded-2xl divide-y divide-slate-100 bg-white text-xs">
               {studentsList
                 .filter(st => {
                   const matchSearch = !assignSearch || st.enrollment_no.toLowerCase().includes(assignSearch.toLowerCase()) || st.name.toLowerCase().includes(assignSearch.toLowerCase());
@@ -3767,7 +4834,7 @@ export const AdminDashboard: React.FC = () => {
                   return (
                     <label
                       key={st.id}
-                      className={`flex items-center justify-between p-3 cursor-pointer transition-colors ${isChecked ? 'bg-sky-500/10' : 'hover:bg-slate-800/40'
+                      className={`flex items-center justify-between p-3 cursor-pointer transition-colors ${isChecked ? 'bg-sky-50' : 'hover:bg-slate-50'
                         }`}
                     >
                       <div className="flex items-center space-x-3">
@@ -3781,7 +4848,7 @@ export const AdminDashboard: React.FC = () => {
                               setSelectedStudentIdsToAssign(prev => prev.filter(id => id !== st.id));
                             }
                           }}
-                          className="w-4 h-4 rounded border-slate-200 text-sky-600 focus:ring-0"
+                          className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-0"
                         />
                         <div>
                           <p className="font-bold text-slate-900">{st.name}</p>
@@ -3789,7 +4856,7 @@ export const AdminDashboard: React.FC = () => {
                         </div>
                       </div>
                       <div className="text-right">
-                        <p className="text-slate-300 font-medium">{st.department}</p>
+                        <p className="text-slate-600 font-medium">{st.department}</p>
                         <p className="text-[11px] text-slate-500">{st.year || '1st Year'} • {st.semester || 'Sem 1'}</p>
                       </div>
                     </label>
@@ -3801,7 +4868,7 @@ export const AdminDashboard: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setAssigningExam(null)}
-                className="px-4 py-2 bg-slate-800 text-slate-300 rounded-xl text-xs font-semibold"
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold transition-colors"
               >
                 Cancel
               </button>
@@ -3828,7 +4895,7 @@ export const AdminDashboard: React.FC = () => {
                 <HelpCircle className="w-5 h-5 text-blue-600" />
                 <span>{editingQuestion ? 'Edit Question' : '+ Add Question to Question Bank'}</span>
               </h4>
-              <button onClick={() => setShowAddQuestionModal(false)} className="text-slate-400 hover:text-white">
+              <button onClick={() => setShowAddQuestionModal(false)} className="text-slate-400 hover:text-slate-600 transition-colors">
                 <X className="w-5 h-5" />
               </button>
             </div>
@@ -3836,7 +4903,7 @@ export const AdminDashboard: React.FC = () => {
             <form onSubmit={handleSaveQuestion} className="space-y-3.5 text-xs">
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Subject Association</label>
+                  <label className="block text-slate-700 font-semibold mb-1">Subject Association</label>
                   <select
                     value={qFormSubjectId}
                     onChange={(e) => {
@@ -3847,7 +4914,7 @@ export const AdminDashboard: React.FC = () => {
                         setQFormDeptId(sObj.department_id);
                       }
                     }}
-                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white"
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                   >
                     <option value="">General (No specific subject)</option>
                     {subjects.map((s) => (
@@ -3857,9 +4924,9 @@ export const AdminDashboard: React.FC = () => {
                 </div>
                 <div>
                   <div className="flex items-center justify-between mb-1">
-                    <label className="block text-slate-400 font-semibold">Department</label>
+                    <label className="block text-slate-700 font-semibold">Department</label>
                     {currentUser?.role === 'hod' && (
-                      <span className="text-amber-400 text-[10px] flex items-center gap-1 font-semibold">
+                      <span className="text-amber-600 text-[10px] flex items-center gap-1 font-semibold">
                         <Lock className="w-2.5 h-2.5" /> Locked
                       </span>
                     )}
@@ -3868,7 +4935,7 @@ export const AdminDashboard: React.FC = () => {
                     disabled={currentUser?.role === 'hod'}
                     value={qFormDeptId}
                     onChange={(e) => setQFormDeptId(e.target.value ? Number(e.target.value) : '')}
-                    className={`w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white ${
+                    className={`w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 ${
                       currentUser?.role === 'hod' ? 'opacity-80 cursor-not-allowed' : ''
                     }`}
                   >
@@ -3881,67 +4948,67 @@ export const AdminDashboard: React.FC = () => {
               </div>
 
               <div>
-                <label className="block text-slate-400 font-semibold mb-1">Question Text *</label>
+                <label className="block text-slate-700 font-semibold mb-1">Question Text *</label>
                 <textarea
                   required
                   rows={3}
                   placeholder="e.g. Which of the following is a linear data structure?"
                   value={qFormText}
                   onChange={(e) => setQFormText(e.target.value)}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-white"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium placeholder-slate-400 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Option A *</label>
+                  <label className="block text-slate-700 font-semibold mb-1">Option A *</label>
                   <input
                     type="text"
                     required
                     value={qFormOptA}
                     onChange={(e) => setQFormOptA(e.target.value)}
-                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium placeholder-slate-400 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                   />
                 </div>
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Option B *</label>
+                  <label className="block text-slate-700 font-semibold mb-1">Option B *</label>
                   <input
                     type="text"
                     required
                     value={qFormOptB}
                     onChange={(e) => setQFormOptB(e.target.value)}
-                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium placeholder-slate-400 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                   />
                 </div>
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Option C *</label>
+                  <label className="block text-slate-700 font-semibold mb-1">Option C *</label>
                   <input
                     type="text"
                     required
                     value={qFormOptC}
                     onChange={(e) => setQFormOptC(e.target.value)}
-                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium placeholder-slate-400 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                   />
                 </div>
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Option D *</label>
+                  <label className="block text-slate-700 font-semibold mb-1">Option D *</label>
                   <input
                     type="text"
                     required
                     value={qFormOptD}
                     onChange={(e) => setQFormOptD(e.target.value)}
-                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium placeholder-slate-400 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                   />
                 </div>
               </div>
 
               <div className="grid grid-cols-4 gap-3">
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Correct Answer</label>
+                  <label className="block text-slate-700 font-semibold mb-1">Correct Answer</label>
                   <select
                     value={qFormCorrect}
                     onChange={(e) => setQFormCorrect(e.target.value)}
-                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-mono font-bold"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-mono font-bold focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                   >
                     <option value="A">A</option>
                     <option value="B">B</option>
@@ -3950,21 +5017,21 @@ export const AdminDashboard: React.FC = () => {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Marks</label>
+                  <label className="block text-slate-700 font-semibold mb-1">Marks</label>
                   <input
                     type="number"
                     min={1}
                     value={qFormMarks}
                     onChange={(e) => setQFormMarks(parseInt(e.target.value, 10) || 1)}
-                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                   />
                 </div>
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Difficulty</label>
+                  <label className="block text-slate-700 font-semibold mb-1">Difficulty</label>
                   <select
                     value={qFormDifficulty}
                     onChange={(e) => setQFormDifficulty(e.target.value)}
-                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                   >
                     <option value="Easy">Easy</option>
                     <option value="Medium">Medium</option>
@@ -3972,12 +5039,12 @@ export const AdminDashboard: React.FC = () => {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Topic</label>
+                  <label className="block text-slate-700 font-semibold mb-1">Topic</label>
                   <input
                     type="text"
                     value={qFormTopic}
                     onChange={(e) => setQFormTopic(e.target.value)}
-                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-white"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium placeholder-slate-400 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                   />
                 </div>
               </div>
@@ -3986,7 +5053,7 @@ export const AdminDashboard: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setShowAddQuestionModal(false)}
-                  className="flex-1 py-2.5 bg-slate-800 text-slate-300 rounded-xl font-semibold"
+                  className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-semibold transition-colors"
                 >
                   Cancel
                 </button>
@@ -4006,61 +5073,349 @@ export const AdminDashboard: React.FC = () => {
       {/* MODAL 8: DELETE SUBJECT CONFIRMATION                      */}
       {/* ========================================================= */}
       {deletingSubject && (
-        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white border border-slate-200 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl">
-            <div className="flex items-center space-x-3 text-rose-400">
-              <AlertTriangle className="w-6 h-6" />
-              <h4 className="text-base font-bold text-slate-900">Delete Subject</h4>
-            </div>
-            <p className="text-xs text-slate-300 leading-relaxed">
-              Are you sure you want to permanently delete subject <span className="font-bold text-slate-900">'{deletingSubject.name}'</span>?
-              If this subject is referenced by existing questions or exams, the deletion will be blocked and deactivation recommended to preserve academic history.
-            </p>
-            <div className="flex items-center space-x-3 pt-2">
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-lg w-full p-6 space-y-5 shadow-2xl">
+            {/* Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center space-x-3">
+                <div className={`p-2.5 rounded-2xl ${subjectDeps?.has_dependencies ? 'bg-amber-50 text-amber-600 border border-amber-200' : 'bg-rose-50 text-rose-600 border border-rose-200'}`}>
+                  {subjectDeps?.has_dependencies ? <AlertTriangle className="w-5 h-5" /> : <Trash2 className="w-5 h-5" />}
+                </div>
+                <div>
+                  <h4 className="text-base font-bold text-slate-900">
+                    {subjectDeps?.has_dependencies ? 'Subject Deletion Blocked' : 'Delete Subject'}
+                  </h4>
+                  <p className="text-xs text-slate-500">
+                    {subjectDeps?.has_dependencies ? 'Protected dependencies detected' : 'Permanent removal confirmation'}
+                  </p>
+                </div>
+              </div>
               <button
-                onClick={() => setDeletingSubject(null)}
-                className="flex-1 py-2.5 bg-slate-800 text-slate-300 rounded-xl text-xs font-semibold"
+                onClick={() => { setDeletingSubject(null); setSubjectDeps(null); }}
+                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-colors"
+                title="Close"
               >
-                Cancel
-              </button>
-              <button
-                onClick={handleDeleteSubject}
-                className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold"
-              >
-                Delete Subject
+                <X className="w-5 h-5" />
               </button>
             </div>
+
+            {/* Subject Profile Card */}
+            <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-4 space-y-2">
+              <div className="flex items-start justify-between">
+                <div>
+                  <div className="text-sm font-bold text-slate-900">{deletingSubject.name}</div>
+                  <div className="text-xs font-mono font-semibold text-blue-600 mt-0.5">Code: {deletingSubject.code}</div>
+                </div>
+                <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold border ${
+                  deletingSubject.is_active
+                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                    : 'bg-slate-200 text-slate-600 border-slate-300'
+                }`}>
+                  {deletingSubject.is_active ? 'Active' : 'Inactive / Archived'}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-2 pt-2 text-xs text-slate-600 border-t border-slate-200/60">
+                <div>
+                  <span className="text-slate-400">Department:</span>{' '}
+                  <span className="font-medium text-slate-800">{deletingSubject.department_name || departments.find(d => d.id === deletingSubject.department_id)?.name || 'General'}</span>
+                </div>
+                <div>
+                  <span className="text-slate-400">Semester:</span>{' '}
+                  <span className="font-medium text-slate-800">{deletingSubject.semester_name || '-'}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Dependency Evaluation Section */}
+            {subjectDeps?.loading ? (
+              <div className="py-6 flex flex-col items-center justify-center space-y-3 bg-slate-50/50 rounded-2xl border border-dashed border-slate-200">
+                <RefreshCw className="w-5 h-5 text-blue-600 animate-spin" />
+                <p className="text-xs text-slate-500 font-medium">Verifying questions, examinations, and student attempt records...</p>
+              </div>
+            ) : subjectDeps?.has_dependencies ? (
+              /* Case A: Protected Dependencies Exist */
+              <div className="space-y-4">
+                <div className="bg-amber-50/80 border border-amber-200 rounded-2xl p-4 text-xs text-amber-900 space-y-2.5">
+                  <div className="flex items-center space-x-2 font-bold text-amber-800 text-xs uppercase tracking-wide">
+                    <Shield className="w-4 h-4 text-amber-600 shrink-0" />
+                    <span>Academic Integrity Protection Active</span>
+                  </div>
+                  <p className="leading-relaxed text-amber-800/90">
+                    Permanent deletion is <strong className="font-semibold text-amber-950">disabled</strong> because this subject is linked to active or historical records:
+                  </p>
+                  <div className="grid grid-cols-3 gap-2 py-1 text-center font-semibold">
+                    <div className="bg-white/90 border border-amber-200/60 rounded-xl p-2 shadow-xs">
+                      <div className="text-base text-amber-950 font-black">{subjectDeps.question_count}</div>
+                      <div className="text-[10px] text-amber-700">Question(s)</div>
+                    </div>
+                    <div className="bg-white/90 border border-amber-200/60 rounded-xl p-2 shadow-xs">
+                      <div className="text-base text-amber-950 font-black">{subjectDeps.exam_count}</div>
+                      <div className="text-[10px] text-amber-700">Exam(s)</div>
+                    </div>
+                    <div className="bg-white/90 border border-amber-200/60 rounded-xl p-2 shadow-xs">
+                      <div className="text-base text-amber-950 font-black">{subjectDeps.attempt_count}</div>
+                      <div className="text-[10px] text-amber-700">Student Attempt(s)</div>
+                    </div>
+                  </div>
+                  <p className="text-[11px] text-amber-700 leading-normal">
+                    Permanently deleting this subject would corrupt previous assessment reports, question banks, or grade history. To prevent this subject from appearing in new examinations, use <span className="font-bold">Deactivate / Archive</span> instead.
+                  </p>
+                </div>
+
+                {/* Actions for Protected Subject */}
+                <div className="flex items-center space-x-3 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => { setDeletingSubject(null); setSubjectDeps(null); }}
+                    className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  {deletingSubject.is_active ? (
+                    <button
+                      type="button"
+                      disabled={isDeactivatingSubject}
+                      onClick={handleDeactivateSubjectFromModal}
+                      className="flex-1 py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-white rounded-xl text-xs font-bold shadow-md shadow-amber-500/20 transition-all flex items-center justify-center space-x-1.5"
+                    >
+                      {isDeactivatingSubject ? (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          <span>Archiving...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Archive className="w-3.5 h-3.5" />
+                          <span>Deactivate & Archive</span>
+                        </>
+                      )}
+                    </button>
+                  ) : (
+                    <div className="flex-1 text-center py-2.5 bg-slate-100 text-slate-500 rounded-xl text-xs font-medium border border-slate-200">
+                      Already Deactivated
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              /* Case B: Eligible for Permanent Deletion (No Dependencies) */
+              <div className="space-y-4">
+                <div className="bg-emerald-50/80 border border-emerald-200 rounded-2xl p-4 text-xs text-emerald-900 space-y-2">
+                  <div className="flex items-center space-x-2 font-bold text-emerald-800 text-xs uppercase tracking-wide">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <span>Eligible for Permanent Deletion</span>
+                  </div>
+                  <p className="leading-relaxed text-emerald-800/90">
+                    This subject has <strong className="font-semibold text-emerald-950">no questions, examinations, or student attempts</strong> referencing it. It can be safely and permanently deleted without affecting any academic history.
+                  </p>
+                  <p className="text-[11px] text-rose-600 font-semibold">
+                    Warning: This action will completely remove this subject from the database and cannot be undone.
+                  </p>
+                </div>
+
+                {/* Actions for Eligible Subject */}
+                <div className="flex items-center space-x-3 pt-1">
+                  <button
+                    type="button"
+                    disabled={isDeletingSubject}
+                    onClick={() => { setDeletingSubject(null); setSubjectDeps(null); }}
+                    className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isDeletingSubject}
+                    onClick={handleDeleteSubject}
+                    className="flex-1 py-2.5 bg-gradient-to-r from-rose-600 to-rose-700 hover:from-rose-500 hover:to-rose-600 text-white rounded-xl text-xs font-bold shadow-md shadow-rose-600/20 transition-all flex items-center justify-center space-x-1.5"
+                  >
+                    {isDeletingSubject ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>Deleting...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Permanently Delete</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
 
       {/* ========================================================= */}
-      {/* MODAL 9: DELETE QUESTION CONFIRMATION                     */}
+      {/* MODAL: SAFE DEPARTMENT DELETION                           */}
+      {/* ========================================================= */}
+      {deptToDelete && (
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-lg w-full p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center space-x-3 text-rose-600">
+              <AlertTriangle className="w-6 h-6" />
+              <div>
+                <h4 className="text-base font-bold text-slate-900">Delete Department Safely</h4>
+                <p className="text-xs text-slate-500 font-medium">Department: {deptToDelete.name}</p>
+              </div>
+            </div>
+
+            {checkingDeptDeps ? (
+              <div className="py-8 flex flex-col items-center justify-center space-y-3 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+                <RefreshCw className="w-5 h-5 text-blue-600 animate-spin" />
+                <p className="text-xs text-slate-500 font-medium">Checking dependent subjects, exams, and enrolled students...</p>
+              </div>
+            ) : deptDeps && !deptDeps.can_delete ? (
+              <div className="space-y-4">
+                <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-xs text-amber-900 space-y-2.5">
+                  <div className="flex items-center space-x-2 font-bold text-amber-800">
+                    <Shield className="w-4 h-4 text-amber-600 shrink-0" />
+                    <span>Department Deletion Blocked by Active Dependencies</span>
+                  </div>
+                  <p className="leading-relaxed">
+                    This department cannot be permanently deleted because active dependent records are mapped to it:
+                  </p>
+                  <div className="grid grid-cols-3 gap-2 py-1 text-center font-semibold">
+                    <div className="bg-white border border-amber-200 rounded-xl p-2">
+                      <div className="text-base font-black text-amber-950">{deptDeps.subjects_count || 0}</div>
+                      <div className="text-[10px] text-amber-700">Subject(s)</div>
+                    </div>
+                    <div className="bg-white border border-amber-200 rounded-xl p-2">
+                      <div className="text-base font-black text-amber-950">{deptDeps.students_count || 0}</div>
+                      <div className="text-[10px] text-amber-700">Student(s)</div>
+                    </div>
+                    <div className="bg-white border border-amber-200 rounded-xl p-2">
+                      <div className="text-base font-black text-amber-950">{deptDeps.exams_count || 0}</div>
+                      <div className="text-[10px] text-amber-700">Exam(s)</div>
+                    </div>
+                  </div>
+                  <p className="text-[11px] text-amber-800">
+                    {deptDeps.reason || "Reassign or delete dependent subjects, students, and exams before deleting this department."}
+                  </p>
+                </div>
+                <div className="flex justify-end pt-1">
+                  <button
+                    onClick={() => { setDeptToDelete(null); setDeptDeps(null); }}
+                    className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold cursor-pointer"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 text-xs text-emerald-900 space-y-2">
+                  <div className="flex items-center space-x-2 font-bold text-emerald-800">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <span>Eligible for Permanent Deletion</span>
+                  </div>
+                  <p>
+                    This department has <strong>0 dependent subjects, students, and exams</strong>. Permanent deletion will remove it completely.
+                  </p>
+                </div>
+                <div className="flex items-center space-x-3 pt-1">
+                  <button
+                    disabled={isDeletingDept}
+                    onClick={() => { setDeptToDelete(null); setDeptDeps(null); }}
+                    className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    disabled={isDeletingDept}
+                    onClick={handleConfirmDeleteDept}
+                    className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold shadow-xs transition-colors cursor-pointer"
+                  >
+                    {isDeletingDept ? 'Deleting...' : 'Permanently Delete Department'}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* MODAL: SAFE QUESTION DELETION                             */}
       {/* ========================================================= */}
       {deletingQuestion && (
         <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white border border-slate-200 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl">
-            <div className="flex items-center space-x-3 text-rose-400">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-lg w-full p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center space-x-3 text-rose-600">
               <AlertTriangle className="w-6 h-6" />
-              <h4 className="text-base font-bold text-slate-900">Delete Question #{deletingQuestion.id}</h4>
+              <div>
+                <h4 className="text-base font-bold text-slate-900">Safe Question Deletion</h4>
+                <p className="text-xs text-slate-500 font-mono">Question #{deletingQuestion.id}</p>
+              </div>
             </div>
-            <p className="text-xs text-slate-300 leading-relaxed">
-              Are you sure you want to permanently delete this question? If it has historical assessment records, please deactivate it instead.
-            </p>
-            <div className="flex items-center space-x-3 pt-2">
-              <button
-                onClick={() => setDeletingQuestion(null)}
-                className="flex-1 py-2.5 bg-slate-800 text-slate-300 rounded-xl text-xs font-semibold"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleDeleteQuestion}
-                className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold"
-              >
-                Delete Question
-              </button>
+
+            <div className="bg-slate-50 border border-slate-200 p-3.5 rounded-2xl text-xs text-slate-700 line-clamp-3">
+              "{deletingQuestion.question_text}"
             </div>
+
+            {checkingQuestionDeps ? (
+              <div className="py-6 flex flex-col items-center justify-center space-y-3 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+                <RefreshCw className="w-5 h-5 text-blue-600 animate-spin" />
+                <p className="text-xs text-slate-500 font-medium">Checking question examination and student attempt dependencies...</p>
+              </div>
+            ) : questionDeps && !questionDeps.can_delete ? (
+              <div className="space-y-4">
+                <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-xs text-amber-900 space-y-2.5">
+                  <div className="flex items-center space-x-2 font-bold text-amber-800">
+                    <Shield className="w-4 h-4 text-amber-600 shrink-0" />
+                    <span>Academic Assessment History Protected</span>
+                  </div>
+                  <p className="leading-relaxed">
+                    This question is referenced by <strong>{questionDeps.answers_count || 0} student exam attempt(s)</strong>.
+                    Permanent deletion is blocked to prevent grade corruption. You may <strong>Deactivate</strong> this question so it won't appear in future tests.
+                  </p>
+                </div>
+                <div className="flex items-center space-x-3 pt-1">
+                  <button
+                    onClick={() => { setDeletingQuestion(null); setQuestionDeps(null); }}
+                    className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleDeactivateQuestionFromModal}
+                    className="flex-1 py-2.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition-colors cursor-pointer"
+                  >
+                    Deactivate & Archive
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 text-xs text-emerald-900 space-y-2">
+                  <div className="flex items-center space-x-2 font-bold text-emerald-800">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <span>Eligible for Permanent Deletion</span>
+                  </div>
+                  <p>
+                    This question has no completed student examination attempts referencing it and can be permanently deleted safely.
+                  </p>
+                </div>
+                <div className="flex items-center space-x-3 pt-1">
+                  <button
+                    disabled={isDeletingQuestion}
+                    onClick={() => { setDeletingQuestion(null); setQuestionDeps(null); }}
+                    className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    disabled={isDeletingQuestion}
+                    onClick={handleConfirmDeleteQuestion}
+                    className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold shadow-xs transition-colors cursor-pointer"
+                  >
+                    {isDeletingQuestion ? 'Deleting...' : 'Permanently Delete'}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -4202,31 +5557,175 @@ export const AdminDashboard: React.FC = () => {
       )}
 
       {/* ========================================================= */}
-      {/* MODAL 10: DELETE ATTEMPT CONFIRMATION                     */}
+      {/* MODAL: SAFE ATTEMPT DELETION                              */}
       {/* ========================================================= */}
       {deletingAttempt && (
         <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white border border-slate-200 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl">
-            <div className="flex items-center space-x-3 text-rose-400">
+            <div className="flex items-center space-x-3 text-rose-600">
               <AlertTriangle className="w-6 h-6" />
-              <h4 className="text-base font-bold text-slate-900">Delete Assessment Attempt</h4>
+              <div>
+                <h4 className="text-base font-bold text-slate-900">Delete Assessment Attempt</h4>
+                <p className="text-xs text-slate-500 font-mono">Attempt #{deletingAttempt.attempt_id}</p>
+              </div>
             </div>
-            <p className="text-xs text-slate-300 leading-relaxed">
-              Are you sure you want to permanently delete assessment attempt <span className="font-mono text-blue-600 font-bold">#{deletingAttempt.attempt_id}</span> for student <span className="font-bold text-slate-900">{deletingAttempt.name}</span>?
-              This will remove score records and answer logs while preserving the student account and examination.
+            <div className="bg-slate-50 border border-slate-200 p-3.5 rounded-2xl text-xs text-slate-700 space-y-1">
+              <p>Student: <strong className="text-slate-900">{deletingAttempt.name}</strong> ({deletingAttempt.enrollment_no})</p>
+              <p>Exam: <strong className="text-slate-900">{deletingAttempt.exam_title || 'General'}</strong></p>
+              <p>Score: <strong className="text-slate-900">{deletingAttempt.score ?? '-'}</strong></p>
+            </div>
+
+            {checkingAttemptDeps ? (
+              <div className="py-4 flex items-center justify-center space-x-2 text-xs text-slate-500 bg-slate-50 rounded-xl">
+                <RefreshCw className="w-4 h-4 text-blue-600 animate-spin" />
+                <span>Checking dependent records...</span>
+              </div>
+            ) : attemptDeps && (
+              <div className="grid grid-cols-2 gap-2 text-xs text-center font-semibold">
+                <div className="bg-slate-100 rounded-xl p-2 border border-slate-200">
+                  <div className="text-sm font-bold text-slate-900">{attemptDeps.answers_count || 0}</div>
+                  <div className="text-[10px] text-slate-500">Student Answer(s)</div>
+                </div>
+                <div className="bg-slate-100 rounded-xl p-2 border border-slate-200">
+                  <div className="text-sm font-bold text-slate-900">{attemptDeps.logs_count || 0}</div>
+                  <div className="text-[10px] text-slate-500">Security Audit Log(s)</div>
+                </div>
+              </div>
+            )}
+
+            <p className="text-xs text-rose-600 leading-relaxed font-semibold">
+              Warning: This will permanently delete the attempt record, student question answers, and anti-cheating audit trail. The student profile and exam definition will remain intact.
             </p>
             <div className="flex items-center space-x-3 pt-2">
               <button
-                onClick={() => setDeletingAttempt(null)}
-                className="flex-1 py-2.5 bg-slate-800 text-slate-300 rounded-xl text-xs font-semibold"
+                disabled={isDeletingAttempt}
+                onClick={() => { setDeletingAttempt(null); setAttemptDeps(null); }}
+                className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold cursor-pointer"
               >
                 Cancel
               </button>
               <button
-                onClick={handleDeleteAttempt}
-                className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold"
+                disabled={isDeletingAttempt}
+                onClick={handleConfirmDeleteAttempt}
+                className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold transition-colors cursor-pointer"
               >
-                Delete Attempt
+                {isDeletingAttempt ? 'Deleting...' : 'Permanently Delete Attempt'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* MODAL: STAFF / ADMIN USER DELETION                        */}
+      {/* ========================================================= */}
+      {deletingUser && (
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center space-x-3 text-rose-600">
+              <AlertTriangle className="w-6 h-6" />
+              <div>
+                <h4 className="text-base font-bold text-slate-900">Delete Administrator Account</h4>
+                <p className="text-xs text-slate-500 font-mono">@{deletingUser.username}</p>
+              </div>
+            </div>
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Are you sure you want to permanently delete administrative account <strong className="text-slate-900">{deletingUser.full_name || deletingUser.username}</strong> ({deletingUser.role})?
+            </p>
+            <div className="flex items-center space-x-3 pt-2">
+              <button
+                disabled={isDeletingUser}
+                onClick={() => setDeletingUser(null)}
+                className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                disabled={isDeletingUser}
+                onClick={handleConfirmDeleteUser}
+                className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold transition-colors cursor-pointer"
+              >
+                {isDeletingUser ? 'Deleting...' : 'Permanently Delete Account'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* MODAL: UNIVERSAL HIGH-IMPACT BULK DELETION                */}
+      {/* ========================================================= */}
+      {bulkDeleteConfig && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-lg w-full p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center space-x-3 text-rose-600">
+              <div className="p-2.5 bg-rose-50 rounded-2xl border border-rose-200">
+                <AlertTriangle className="w-6 h-6" />
+              </div>
+              <div>
+                <h4 className="text-base font-bold text-slate-900">{bulkDeleteConfig.title}</h4>
+                <p className="text-xs text-slate-500">Atomic High-Impact Permanent Bulk Deletion</p>
+              </div>
+            </div>
+
+            <div className="space-y-3 text-xs text-slate-600">
+              <p className="leading-relaxed">
+                {bulkDeleteConfig.description}
+              </p>
+              <div className="bg-rose-50 border border-rose-200 p-3.5 rounded-2xl space-y-2 text-rose-900 font-medium">
+                <div className="flex items-center justify-between">
+                  <span>Selected Record Count:</span>
+                  <span className="font-bold font-mono text-sm">{bulkDeleteConfig.itemCount}</span>
+                </div>
+                {bulkDeleteConfig.impactDetails && (
+                  <p className="text-[11px] text-rose-800 leading-normal pt-1 border-t border-rose-200">
+                    {bulkDeleteConfig.impactDetails}
+                  </p>
+                )}
+              </div>
+              <div className="space-y-1.5 pt-1">
+                <label className="block text-slate-700 font-bold">
+                  Type <span className="font-mono text-rose-600 bg-rose-50 px-1 py-0.5 rounded border border-rose-200">DELETE</span> to confirm permanent deletion:
+                </label>
+                <input
+                  type="text"
+                  value={bulkDeleteConfirmText}
+                  onChange={(e) => setBulkDeleteConfirmText(e.target.value)}
+                  placeholder="Type DELETE"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-slate-900 font-medium font-mono text-sm tracking-wider placeholder-slate-400 focus:outline-none focus:border-rose-500 focus:ring-1 focus:ring-rose-500"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center space-x-3 pt-2">
+              <button
+                type="button"
+                disabled={isBulkDeleting}
+                onClick={() => {
+                  setBulkDeleteConfig(null);
+                  setBulkDeleteConfirmText('');
+                }}
+                className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isBulkDeleting || bulkDeleteConfirmText.trim().toUpperCase() !== 'DELETE'}
+                onClick={handleExecuteBulkDelete}
+                className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-700 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer flex items-center justify-center space-x-1.5"
+              >
+                {isBulkDeleting ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Executing Bulk Delete...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Confirm Permanent Delete</span>
+                  </>
+                )}
               </button>
             </div>
           </div>
@@ -4244,11 +5743,11 @@ export const AdminDashboard: React.FC = () => {
                 <h4 className="text-base font-bold text-slate-900">
                   Assessment Inspection: {inspectingAttempt.student?.name} ({inspectingAttempt.student?.enrollment_no})
                 </h4>
-                <p className="text-xs text-slate-400">
+                <p className="text-xs text-slate-500 font-medium">
                   {inspectingAttempt.student?.department} • Score: {inspectingAttempt.attempt?.score ?? 'N/A'}/{inspectingAttempt.attempt?.total_questions ?? 'N/A'} ({inspectingAttempt.attempt?.percentage?.toFixed(1) ?? '0.0'}%)
                 </p>
               </div>
-              <button onClick={() => setInspectingAttempt(null)} className="text-slate-400 hover:text-white">
+              <button onClick={() => setInspectingAttempt(null)} className="text-slate-400 hover:text-slate-600 transition-colors">
                 <X className="w-5 h-5" />
               </button>
             </div>
@@ -4256,7 +5755,7 @@ export const AdminDashboard: React.FC = () => {
             {/* Anti-Cheating Security Summary */}
             <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-2">
               <h5 className="text-xs font-bold text-slate-900 flex items-center space-x-1.5">
-                <ShieldAlert className="w-4 h-4 text-amber-400" />
+                <ShieldAlert className="w-4 h-4 text-amber-500" />
                 <span>Cheating Reduction & Audit Trail</span>
               </h5>
               <div className="grid grid-cols-4 gap-2 text-xs">
@@ -4281,24 +5780,24 @@ export const AdminDashboard: React.FC = () => {
 
             {/* Student Answers Inspection */}
             <div className="flex-1 overflow-y-auto space-y-3 pr-1 text-xs">
-              <h5 className="font-bold text-slate-300">Question-Wise Response Audit:</h5>
+              <h5 className="font-bold text-slate-900">Question-Wise Response Audit:</h5>
               {inspectingAttempt.answers && inspectingAttempt.answers.length > 0 ? (
                 inspectingAttempt.answers.map((ans: any, idx: number) => (
                   <div key={idx} className="bg-slate-50 border border-slate-200/80 rounded-xl p-3.5 space-y-1.5">
                     <div className="flex items-center justify-between">
                       <span className="font-bold text-blue-600 font-mono">Q{ans.question_number || idx + 1}</span>
-                      <span className={`px-2 py-0.5 rounded font-bold text-[10px] ${ans.is_correct ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'
+                      <span className={`px-2 py-0.5 rounded font-bold text-[10px] ${ans.is_correct ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-rose-50 text-rose-700 border border-rose-200'
                         }`}>
                         {ans.is_correct ? 'Correct (+1)' : 'Incorrect (0)'}
                       </span>
                     </div>
-                    <p className="text-white font-medium">{ans.question || ans.question_text}</p>
+                    <p className="text-slate-900 font-medium leading-relaxed">{ans.question || ans.question_text}</p>
                     <div className="flex items-center space-x-4 text-[11px] pt-1">
-                      <span className="text-slate-400">
-                        Selected: <strong className="text-white">{ans.selected_answer || 'Unanswered'}</strong>
+                      <span className="text-slate-600">
+                        Selected: <strong className="text-slate-900 font-bold">{ans.selected_answer || 'Unanswered'}</strong>
                       </span>
-                      <span className="text-slate-400">
-                        Correct: <strong className="text-emerald-400">{ans.correct_answer}</strong>
+                      <span className="text-slate-600">
+                        Correct: <strong className="text-emerald-700 font-bold">{ans.correct_answer}</strong>
                       </span>
                     </div>
                   </div>
@@ -4312,7 +5811,7 @@ export const AdminDashboard: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setInspectingAttempt(null)}
-                className="px-4 py-2 bg-slate-800 text-slate-300 rounded-xl text-xs font-semibold"
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold transition-colors"
               >
                 Close Inspection
               </button>

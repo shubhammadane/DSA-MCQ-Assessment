@@ -8,4 +8,53 @@
     margin: 0;
     padding: 0;
   }
+
+  /* Global form control typography & text readability */
+  input,
+  select,
+  textarea {
+    color: #0f172a; /* Slate 900 - Ensures immediate visibility while typing */
+  }
+
+  /* Placeholder text with optimal contrast against light backgrounds */
+  input::placeholder,
+  textarea::placeholder {
+    color: #64748b; /* Slate 500 - Strong readable contrast */
+    opacity: 1;
+  }
+
+  /* Dropdown option visibility and background styling */
+  select option {
+    color: #0f172a;
+    background-color: #ffffff;
+  }
+
+  select option:disabled {
+    color: #94a3b8;
+  }
+
+  /* Consistent browser autofill text and background styles */
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus,
+  input:-webkit-autofill:active,
+  textarea:-webkit-autofill,
+  textarea:-webkit-autofill:hover,
+  textarea:-webkit-autofill:focus,
+  select:-webkit-autofill,
+  select:-webkit-autofill:hover,
+  select:-webkit-autofill:focus {
+    -webkit-text-fill-color: #0f172a !important;
+    -webkit-box-shadow: 0 0 0px 1000px #f8fafc inset !important;
+    box-shadow: 0 0 0px 1000px #f8fafc inset !important;
+    transition: background-color 5000s ease-in-out 0s;
+  }
+
+  /* Disabled state contrast */
+  input:disabled,
+  select:disabled,
+  textarea:disabled {
+    opacity: 0.75;
+    cursor: not-allowed;
+  }
 }

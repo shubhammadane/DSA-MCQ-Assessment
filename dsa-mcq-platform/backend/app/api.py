@@ -10,6 +10,11 @@ import random
 import openpyxl
 from pypdf import PdfReader
 from fastapi.responses import StreamingResponse
+import logging
+import os
+import json
+
+logger = logging.getLogger("uvicorn")
 
 from app.database import get_db
 from app import models, schemas
@@ -32,8 +37,15 @@ router = APIRouter(prefix="/api")
 
 
 # =========================================================================
-# HELPER FUNCTIONS
+# HELPER FUNCTIONS & AUDIT LOGGING
 # =========================================================================
+
+def log_deletion_audit(admin_username: str, action_type: str, record_type: str, record_ids: List[int], outcome: str, details: Optional[str] = None):
+    """Audit log all high-impact and bulk permanent deletion operations."""
+    logger.info(
+        f"[AUDIT DELETION] Admin='{admin_username}' | Action='{action_type}' | Target='{record_type}' | "
+        f"IDs={record_ids} | Outcome='{outcome}' | Details='{details or 'None'}' | Timestamp='{datetime.utcnow().isoformat()}'"
+    )
 
 def get_or_create_settings(db: Session) -> models.AssessmentSetting:
     setting = db.query(models.AssessmentSetting).first()
@@ -259,16 +271,69 @@ def update_admin_user(
 @router.delete("/admin/users/{user_id}")
 def delete_admin_user(
     user_id: int,
+    permanent: bool = Query(True, description="Permanently delete user from database"),
     admin: CurrentUser = Depends(require_super_admin),
     db: Session = Depends(get_db)
 ):
     user = db.query(models.AdminUser).filter(models.AdminUser.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
-    
-    user.is_active = False
-    db.commit()
-    return {"status": "success", "message": f"User '{user.username}' deactivated successfully."}
+
+    if admin.id == user.id or admin.username == user.username:
+        raise HTTPException(status_code=400, detail="Cannot delete your own administrative account.")
+    if user.username == settings.ADMIN_USERNAME:
+        raise HTTPException(status_code=400, detail="Cannot delete the root system administrator.")
+
+    uname = user.username
+    if not permanent:
+        user.is_active = False
+        db.commit()
+        log_deletion_audit(admin.username, "DEACTIVATE", "admin_user", [user_id], "SUCCESS", f"Deactivated user {uname}")
+        return {"status": "success", "message": f"User '{uname}' deactivated successfully.", "user_id": user_id, "permanent": False}
+
+    try:
+        db.delete(user)
+        db.commit()
+        log_deletion_audit(admin.username, "PERMANENT_DELETE", "admin_user", [user_id], "SUCCESS", f"Permanently deleted user {uname}")
+        return {"status": "success", "message": f"User '{uname}' permanently deleted successfully.", "user_id": user_id, "permanent": True}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Database error while deleting admin user: {str(e)}")
+
+
+@router.post("/admin/users/bulk-delete", response_model=schemas.BulkDeleteResponse)
+def bulk_delete_admin_users(
+    req: schemas.BulkDeleteRequest,
+    admin: CurrentUser = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+):
+    if not req.ids:
+        raise HTTPException(status_code=400, detail="No user IDs provided.")
+
+    users = db.query(models.AdminUser).filter(models.AdminUser.id.in_(req.ids)).all()
+    if not users:
+        raise HTTPException(status_code=404, detail="No matching users found.")
+
+    for u in users:
+        if admin.id == u.id or admin.username == u.username:
+            raise HTTPException(status_code=400, detail="Cannot delete your own administrative account.")
+        if u.username == settings.ADMIN_USERNAME:
+            raise HTTPException(status_code=400, detail="Cannot delete the root system administrator.")
+
+    try:
+        deleted_ids = [u.id for u in users]
+        db.query(models.AdminUser).filter(models.AdminUser.id.in_(deleted_ids)).delete(synchronize_session=False)
+        db.commit()
+        log_deletion_audit(admin.username, "BULK_PERMANENT_DELETE", "admin_user", deleted_ids, "SUCCESS")
+        return schemas.BulkDeleteResponse(
+            status="success",
+            message=f"Successfully deleted {len(deleted_ids)} administrator/staff account(s).",
+            deleted_count=len(deleted_ids),
+            deleted_ids=deleted_ids
+        )
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to bulk delete admin users: {str(e)}")
 
 
 # =========================================================================
@@ -326,6 +391,237 @@ def toggle_department_status(department_id: int, status_in: schemas.QuestionStat
     db.commit()
     db.refresh(dept)
     return dept
+
+
+@router.get("/departments/{department_id}/dependencies")
+def get_department_dependencies(
+    department_id: int,
+    admin: CurrentUser = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+):
+    dept = db.query(models.Department).filter(models.Department.id == department_id).first()
+    if not dept:
+        raise HTTPException(status_code=404, detail="Department not found.")
+
+    subj_cnt = db.query(models.Subject).filter(models.Subject.department_id == department_id).count()
+    st_cnt = db.query(models.Student).filter(
+        or_(models.Student.department_id == department_id, models.Student.department.ilike(dept.name))
+    ).count()
+    q_cnt = db.query(models.Question).filter(models.Question.department_id == department_id).count()
+    e_cnt = db.query(models.Exam).filter(models.Exam.department_id == department_id).count()
+    u_cnt = db.query(models.AdminUser).filter(models.AdminUser.department_id == department_id).count()
+
+    has_dependencies = (subj_cnt > 0 or st_cnt > 0 or q_cnt > 0 or e_cnt > 0 or u_cnt > 0)
+    reasons = []
+    if subj_cnt > 0: reasons.append(f"{subj_cnt} subject(s)")
+    if st_cnt > 0: reasons.append(f"{st_cnt} student(s)")
+    if q_cnt > 0: reasons.append(f"{q_cnt} question(s)")
+    if e_cnt > 0: reasons.append(f"{e_cnt} examination(s)")
+    if u_cnt > 0: reasons.append(f"{u_cnt} staff/HOD account(s)")
+
+    return {
+        "department_id": dept.id,
+        "name": dept.name,
+        "code": dept.code,
+        "is_active": dept.is_active,
+        "can_delete": not has_dependencies,
+        "has_dependencies": has_dependencies,
+        "dependency_counts": {
+            "subjects": subj_cnt,
+            "students": st_cnt,
+            "questions": q_cnt,
+            "exams": e_cnt,
+            "admin_users": u_cnt,
+        },
+        "dependency_summary": ", ".join(reasons) if reasons else "None",
+        "reason": (
+            f"Referenced by {', '.join(reasons)}. Permanent deletion is blocked to prevent orphaned records and protect institutional data."
+            if has_dependencies
+            else "No protected dependencies. This department can be safely deleted permanently."
+        )
+    }
+
+
+@router.delete("/departments/{department_id}")
+def delete_department(
+    department_id: int,
+    admin: CurrentUser = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+):
+    dept = db.query(models.Department).filter(models.Department.id == department_id).first()
+    if not dept:
+        raise HTTPException(status_code=404, detail="Department not found.")
+
+    subj_cnt = db.query(models.Subject).filter(models.Subject.department_id == department_id).count()
+    st_cnt = db.query(models.Student).filter(
+        or_(models.Student.department_id == department_id, models.Student.department.ilike(dept.name))
+    ).count()
+    q_cnt = db.query(models.Question).filter(models.Question.department_id == department_id).count()
+    e_cnt = db.query(models.Exam).filter(models.Exam.department_id == department_id).count()
+    u_cnt = db.query(models.AdminUser).filter(models.AdminUser.department_id == department_id).count()
+
+    if subj_cnt > 0 or st_cnt > 0 or q_cnt > 0 or e_cnt > 0 or u_cnt > 0:
+        reasons = []
+        if subj_cnt > 0: reasons.append(f"{subj_cnt} subject(s)")
+        if st_cnt > 0: reasons.append(f"{st_cnt} student(s)")
+        if q_cnt > 0: reasons.append(f"{q_cnt} question(s)")
+        if e_cnt > 0: reasons.append(f"{e_cnt} exam(s)")
+        if u_cnt > 0: reasons.append(f"{u_cnt} staff/HOD account(s)")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Cannot permanently delete department '{dept.name}' because it contains active dependencies: {', '.join(reasons)}. "
+                f"Please deactivate the department or reassign/delete dependent records first."
+            )
+        )
+
+    try:
+        dept_name = dept.name
+        db.delete(dept)
+        db.commit()
+        log_deletion_audit(admin.username, "PERMANENT_DELETE", "department", [department_id], "SUCCESS", f"Deleted dept {dept_name}")
+        return {"status": "success", "message": f"Department '{dept_name}' permanently deleted successfully.", "id": department_id}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Database error while deleting department: {str(e)}")
+
+
+@router.post("/departments/bulk-delete", response_model=schemas.BulkDeleteResponse)
+def bulk_delete_departments(
+    req: schemas.BulkDeleteRequest,
+    admin: CurrentUser = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+):
+    if not req.ids:
+        raise HTTPException(status_code=400, detail="No department IDs provided.")
+
+    depts = db.query(models.Department).filter(models.Department.id.in_(req.ids)).all()
+    if not depts:
+        raise HTTPException(status_code=404, detail="No matching departments found.")
+
+    blocked = []
+    for d in depts:
+        s = db.query(models.Subject).filter(models.Subject.department_id == d.id).count()
+        st = db.query(models.Student).filter(or_(models.Student.department_id == d.id, models.Student.department.ilike(d.name))).count()
+        q = db.query(models.Question).filter(models.Question.department_id == d.id).count()
+        e = db.query(models.Exam).filter(models.Exam.department_id == d.id).count()
+        u = db.query(models.AdminUser).filter(models.AdminUser.department_id == d.id).count()
+        if s > 0 or st > 0 or q > 0 or e > 0 or u > 0:
+            blocked.append(f"Department '{d.name}' (ID {d.id}): {s} subjects, {st} students, {q} questions, {e} exams, {u} users")
+
+    if blocked:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Bulk deletion blocked: One or more selected departments have protected dependencies. Details: {'; '.join(blocked)}"
+        )
+
+    try:
+        deleted_ids = [d.id for d in depts]
+        db.query(models.Department).filter(models.Department.id.in_(deleted_ids)).delete(synchronize_session=False)
+        db.commit()
+        log_deletion_audit(admin.username, "BULK_PERMANENT_DELETE", "department", deleted_ids, "SUCCESS")
+        return schemas.BulkDeleteResponse(
+            status="success",
+            message=f"Successfully deleted {len(deleted_ids)} department(s).",
+            deleted_count=len(deleted_ids),
+            deleted_ids=deleted_ids
+        )
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Database error during bulk department deletion: {str(e)}")
+
+
+@router.delete("/academic/programs/{program_id}")
+def delete_academic_program(
+    program_id: int,
+    admin: CurrentUser = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+):
+    prog = db.query(models.Program).filter(models.Program.id == program_id).first()
+    if not prog:
+        raise HTTPException(status_code=404, detail="Program not found.")
+
+    s_cnt = db.query(models.Subject).filter(models.Subject.program_id == program_id).count()
+    q_cnt = db.query(models.Question).filter(models.Question.program_id == program_id).count()
+    e_cnt = db.query(models.Exam).filter(models.Exam.program_id == program_id).count()
+
+    if s_cnt > 0 or q_cnt > 0 or e_cnt > 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot delete program '{prog.name}' because it is referenced by {s_cnt} subject(s), {q_cnt} question(s), and {e_cnt} exam(s)."
+        )
+
+    try:
+        p_name = prog.name
+        db.delete(prog)
+        db.commit()
+        log_deletion_audit(admin.username, "PERMANENT_DELETE", "program", [program_id], "SUCCESS")
+        return {"status": "success", "message": f"Academic program '{p_name}' permanently deleted.", "id": program_id}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Database error deleting program: {str(e)}")
+
+
+@router.delete("/academic/years/{year_id}")
+def delete_academic_year(
+    year_id: int,
+    admin: CurrentUser = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+):
+    ay = db.query(models.AcademicYear).filter(models.AcademicYear.id == year_id).first()
+    if not ay:
+        raise HTTPException(status_code=404, detail="Academic year not found.")
+
+    s_cnt = db.query(models.Subject).filter(models.Subject.academic_year_id == year_id).count()
+    q_cnt = db.query(models.Question).filter(models.Question.academic_year_id == year_id).count()
+    e_cnt = db.query(models.Exam).filter(models.Exam.academic_year_id == year_id).count()
+
+    if s_cnt > 0 or q_cnt > 0 or e_cnt > 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot delete academic year '{ay.name}' because it is referenced by {s_cnt} subject(s), {q_cnt} question(s), and {e_cnt} exam(s)."
+        )
+
+    try:
+        y_name = ay.name
+        db.delete(ay)
+        db.commit()
+        log_deletion_audit(admin.username, "PERMANENT_DELETE", "academic_year", [year_id], "SUCCESS")
+        return {"status": "success", "message": f"Academic year '{y_name}' permanently deleted.", "id": year_id}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Database error deleting academic year: {str(e)}")
+
+
+@router.delete("/academic/semesters/{semester_id}")
+def delete_academic_semester(
+    semester_id: int,
+    admin: CurrentUser = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+):
+    sem = db.query(models.Semester).filter(models.Semester.id == semester_id).first()
+    if not sem:
+        raise HTTPException(status_code=404, detail="Semester not found.")
+
+    s_cnt = db.query(models.Subject).filter(models.Subject.semester_id == semester_id).count()
+    q_cnt = db.query(models.Question).filter(models.Question.semester_id == semester_id).count()
+    e_cnt = db.query(models.Exam).filter(models.Exam.semester_id == semester_id).count()
+
+    if s_cnt > 0 or q_cnt > 0 or e_cnt > 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot delete semester '{sem.name}' because it is referenced by {s_cnt} subject(s), {q_cnt} question(s), and {e_cnt} exam(s)."
+        )
+
+    try:
+        s_name = sem.name
+        db.delete(sem)
+        db.commit()
+        log_deletion_audit(admin.username, "PERMANENT_DELETE", "semester", [semester_id], "SUCCESS")
+        return {"status": "success", "message": f"Semester '{s_name}' permanently deleted.", "id": semester_id}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Database error deleting semester: {str(e)}")
 
 
 @router.get("/departments/stats", response_model=List[schemas.DepartmentStats])
@@ -536,7 +832,7 @@ def update_subject(subject_id: int, subj_in: schemas.SubjectUpdate, admin: Curre
 
 
 @router.patch("/subjects/{subject_id}/status", response_model=schemas.SubjectOut)
-def toggle_subject_status(subject_id: int, status_in: schemas.QuestionStatusUpdate, admin: CurrentUser = Depends(get_current_admin), db: Session = Depends(get_db)):
+def toggle_subject_status(subject_id: int, status_in: schemas.QuestionStatusUpdate, admin: CurrentUser = Depends(require_hod_or_super_admin), db: Session = Depends(get_db)):
     subj = db.query(models.Subject).filter(models.Subject.id == subject_id).first()
     if not subj:
         raise HTTPException(status_code=404, detail="Subject not found.")
@@ -549,27 +845,164 @@ def toggle_subject_status(subject_id: int, status_in: schemas.QuestionStatusUpda
     return subj
 
 
-@router.delete("/subjects/{subject_id}")
-def delete_subject(subject_id: int, admin: CurrentUser = Depends(get_current_admin), db: Session = Depends(get_db)):
+@router.get("/subjects/{subject_id}/dependencies")
+def get_subject_dependencies(
+    subject_id: int,
+    admin: CurrentUser = Depends(require_hod_or_super_admin),
+    db: Session = Depends(get_db)
+):
     subj = db.query(models.Subject).filter(models.Subject.id == subject_id).first()
     if not subj:
         raise HTTPException(status_code=404, detail="Subject not found.")
     if admin.is_hod and subj.department_id != admin.department_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Subject does not belong to your department.")
 
-    # Safe delete check: verify if any questions or exams reference this subject
     q_count = db.query(models.Question).filter(models.Question.subject_id == subject_id).count()
     exam_count = db.query(models.Exam).filter(models.Exam.subject_id == subject_id).count()
+    attempt_count = db.query(models.Attempt).join(models.Exam, models.Attempt.exam_id == models.Exam.id).filter(models.Exam.subject_id == subject_id).count()
+    answers_count = db.query(models.StudentAnswer).join(models.Question, models.StudentAnswer.question_id == models.Question.id).filter(models.Question.subject_id == subject_id).count()
 
-    if q_count > 0 or exam_count > 0:
+    has_dependencies = (q_count > 0 or exam_count > 0 or attempt_count > 0 or answers_count > 0)
+    reasons = []
+    if q_count > 0:
+        reasons.append(f"{q_count} question(s)")
+    if exam_count > 0:
+        reasons.append(f"{exam_count} examination(s)")
+    if attempt_count > 0:
+        reasons.append(f"{attempt_count} student examination attempt(s)")
+    if answers_count > 0 and attempt_count == 0:
+        reasons.append(f"{answers_count} student answer record(s)")
+
+    return {
+        "subject_id": subj.id,
+        "name": subj.name,
+        "code": subj.code,
+        "department_id": subj.department_id,
+        "department_name": subj.department_name,
+        "is_active": subj.is_active,
+        "has_dependencies": has_dependencies,
+        "can_delete": not has_dependencies,
+        "question_count": q_count,
+        "exam_count": exam_count,
+        "attempt_count": attempt_count,
+        "answers_count": answers_count,
+        "dependency_summary": ", ".join(reasons) if reasons else "None",
+        "reason": (
+            f"Referenced by {', '.join(reasons)}. Permanent deletion is blocked to protect historical academic records."
+            if has_dependencies
+            else "No protected dependencies. This subject can be safely deleted permanently."
+        )
+    }
+
+
+@router.delete("/subjects/{subject_id}")
+def delete_subject(subject_id: int, admin: CurrentUser = Depends(require_hod_or_super_admin), db: Session = Depends(get_db)):
+    subj = db.query(models.Subject).filter(models.Subject.id == subject_id).first()
+    if not subj:
+        raise HTTPException(status_code=404, detail="Subject not found.")
+    if admin.is_hod and subj.department_id != admin.department_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Subject does not belong to your department.")
+
+    # Safe delete checks: verify if any questions, exams, student attempts or answers reference this subject
+    q_count = db.query(models.Question).filter(models.Question.subject_id == subject_id).count()
+    exam_count = db.query(models.Exam).filter(models.Exam.subject_id == subject_id).count()
+    attempt_count = db.query(models.Attempt).join(models.Exam, models.Attempt.exam_id == models.Exam.id).filter(models.Exam.subject_id == subject_id).count()
+    answers_count = db.query(models.StudentAnswer).join(models.Question, models.StudentAnswer.question_id == models.Question.id).filter(models.Question.subject_id == subject_id).count()
+
+    if q_count > 0 or exam_count > 0 or attempt_count > 0 or answers_count > 0:
+        reasons = []
+        if q_count > 0:
+            reasons.append(f"{q_count} question(s)")
+        if exam_count > 0:
+            reasons.append(f"{exam_count} examination(s)")
+        if attempt_count > 0:
+            reasons.append(f"{attempt_count} student examination attempt(s)")
+        if answers_count > 0 and attempt_count == 0:
+            reasons.append(f"{answers_count} student answer record(s)")
+        reasons_str = ", ".join(reasons)
         raise HTTPException(
-            status_code=400,
-            detail=f"Cannot delete subject '{subj.name}' because it is referenced by {q_count} question(s) and {exam_count} exam(s). Please deactivate it instead to preserve academic records."
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Cannot permanently delete subject '{subj.name}' ({subj.code}) because it has protected academic dependencies: "
+                f"{reasons_str}. Deleting it would compromise historical records. "
+                f"Please deactivate or archive this subject instead to safely remove it from active selection."
+            )
         )
 
-    db.delete(subj)
-    db.commit()
-    return {"message": f"Subject '{subj.name}' deleted successfully", "id": subject_id}
+    try:
+        subj_name = subj.name
+        subj_code = subj.code
+        db.delete(subj)
+        db.commit()
+        log_deletion_audit(admin.username, "PERMANENT_DELETE", "subject", [subject_id], "SUCCESS", f"Deleted {subj_name}")
+        return {
+            "message": f"Subject '{subj_name}' ({subj_code}) permanently deleted successfully",
+            "id": subject_id
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Database error occurred while deleting subject '{subj.name}': {str(e)}"
+        )
+
+
+@router.post("/subjects/bulk-delete", response_model=schemas.BulkDeleteResponse)
+def bulk_delete_subjects(
+    req: schemas.BulkDeleteRequest,
+    admin: CurrentUser = Depends(require_hod_or_super_admin),
+    db: Session = Depends(get_db)
+):
+    if not req.ids:
+        raise HTTPException(status_code=400, detail="No subject IDs provided for deletion.")
+
+    subjects = db.query(models.Subject).filter(models.Subject.id.in_(req.ids)).all()
+    if not subjects:
+        raise HTTPException(status_code=404, detail="No matching subjects found.")
+
+    if admin.is_hod:
+        for s in subjects:
+            if s.department_id != admin.department_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Access denied: Subject '{s.name}' ({s.code}) does not belong to your department."
+                )
+
+    blocked = []
+    for s in subjects:
+        q_count = db.query(models.Question).filter(models.Question.subject_id == s.id).count()
+        exam_count = db.query(models.Exam).filter(models.Exam.subject_id == s.id).count()
+        attempt_count = db.query(models.Attempt).join(models.Exam, models.Attempt.exam_id == models.Exam.id).filter(models.Exam.subject_id == s.id).count()
+        answers_count = db.query(models.StudentAnswer).join(models.Question, models.StudentAnswer.question_id == models.Question.id).filter(models.Question.subject_id == s.id).count()
+
+        if q_count > 0 or exam_count > 0 or attempt_count > 0 or answers_count > 0:
+            reasons = []
+            if q_count > 0: reasons.append(f"{q_count} questions")
+            if exam_count > 0: reasons.append(f"{exam_count} exams")
+            if attempt_count > 0: reasons.append(f"{attempt_count} attempts")
+            blocked.append(f"Subject '{s.name}' ({s.code}): referenced by {', '.join(reasons)}")
+
+    if blocked:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Bulk deletion blocked: One or more selected subjects have protected academic dependencies. {'; '.join(blocked)}. Please deactivate them instead."
+        )
+
+    try:
+        deleted_ids = [s.id for s in subjects]
+        db.query(models.Subject).filter(models.Subject.id.in_(deleted_ids)).delete(synchronize_session=False)
+        db.commit()
+        log_deletion_audit(admin.username, "BULK_PERMANENT_DELETE", "subject", deleted_ids, "SUCCESS")
+        return schemas.BulkDeleteResponse(
+            status="success",
+            message=f"Successfully deleted {len(deleted_ids)} subject(s) with zero dependencies.",
+            deleted_count=len(deleted_ids),
+            deleted_ids=deleted_ids
+        )
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Database error during bulk subject deletion: {str(e)}")
+
 
 
 # =========================================================================
@@ -712,18 +1145,61 @@ def toggle_student_status(student_id: int, status_in: schemas.QuestionStatusUpda
     return student
 
 
-@router.delete("/admin/students/{student_id}")
-def admin_delete_student(
+@router.get("/admin/students/{student_id}/dependencies", response_model=schemas.DependencyCheckResponse)
+def get_student_dependencies(
     student_id: int,
     admin: CurrentUser = Depends(get_current_admin),
     db: Session = Depends(get_db)
 ):
+    student = db.query(models.Student).filter(models.Student.id == student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found.")
+
+    if admin.is_hod:
+        if student.department_id != admin.department_id and student.department != admin.department_name:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Student does not belong to your department.")
+
+    total_attempts = db.query(models.Attempt).filter(models.Attempt.student_id == student_id).count()
+    completed_attempts = db.query(models.Attempt).filter(
+        models.Attempt.student_id == student_id,
+        or_(models.Attempt.status == "completed", models.Attempt.completed_at != None, models.Attempt.score != None)
+    ).count()
+    assignments_count = db.query(models.ExamStudent).filter(models.ExamStudent.student_id == student_id).count()
+
+    can_delete = True  # Can be deleted with explicit force or if no completed history
+    reason = f"Student has {total_attempts} total attempts ({completed_attempts} completed with recorded marks) and {assignments_count} exam assignment(s)."
+    if completed_attempts > 0:
+        reason += " Deleting will permanently destroy historical examination results. Explicit confirmation is required."
+
+    return schemas.DependencyCheckResponse(
+        record_id=student_id,
+        record_name=f"{student.name} ({student.enrollment_no})",
+        record_type="student",
+        can_delete=can_delete,
+        has_dependencies=total_attempts > 0 or assignments_count > 0,
+        dependency_counts={
+            "total_attempts": total_attempts,
+            "completed_attempts": completed_attempts,
+            "exam_assignments": assignments_count
+        },
+        reason=reason
+    )
+
+
+@router.delete("/admin/students/{student_id}")
+def admin_delete_student(
+    student_id: int,
+    force: bool = Query(False),
+    admin: CurrentUser = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
     """
-    CRITICAL REQUIREMENT: SAFE STUDENT DELETION
+    CRITICAL REQUIREMENT: SAFE STUDENT DELETION & EXAMINATION HISTORY PROTECTION
     Safely delete a student and their dependent records:
     Exam assignments, answers, security logs, and attempts.
     Preserves other students, questions, subjects, exams, departments, and system configuration.
     Enforces HOD authorization restrictions.
+    Requires force=True if student has completed exam history.
     """
     student = db.query(models.Student).filter(models.Student.id == student_id).first()
     if not student:
@@ -735,6 +1211,18 @@ def admin_delete_student(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Access denied: Cannot delete student belonging to another department."
             )
+
+    # Protect examination history
+    completed_count = db.query(models.Attempt).filter(
+        models.Attempt.student_id == student_id,
+        or_(models.Attempt.status == "completed", models.Attempt.completed_at != None, models.Attempt.score != None)
+    ).count()
+
+    if completed_count > 0 and not force:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Student '{student.name}' ({student.enrollment_no}) has {completed_count} completed examination attempt(s) with recorded marks. Deleting this student would permanently destroy their examination history. Please confirm with force=true or archive/deactivate the student instead."
+        )
 
     try:
         # 1. Identify all attempt IDs for this student
@@ -762,14 +1250,19 @@ def admin_delete_student(
         db.delete(student)
         db.commit()
 
+        log_deletion_audit(admin.username, "SINGLE_DELETE", "Student", [student_id], "SUCCESS", f"Student '{student_name}' ({enrollment_no}) deleted.")
+
         return {
             "status": "success",
             "message": f"Student '{student_name}' ({enrollment_no}) and dependent records safely deleted.",
             "student_id": student_id,
             "deleted_attempts_count": len(attempt_ids)
         }
+    except HTTPException:
+        raise
     except Exception as e:
         db.rollback()
+        log_deletion_audit(admin.username, "SINGLE_DELETE", "Student", [student_id], "FAILED", str(e))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to safely delete student: {str(e)}"
@@ -786,6 +1279,7 @@ def admin_bulk_delete_students(
     Safely delete multiple selected students and their dependent records.
     Enforces HOD authorization: if any selected student belongs to another department,
     the entire operation is rejected with 403 Forbidden.
+    Requires force=True if any selected student has completed examination history.
     """
     if not req.student_ids:
         raise HTTPException(status_code=400, detail="No student IDs provided for deletion.")
@@ -802,9 +1296,24 @@ def admin_bulk_delete_students(
                     detail=f"Access denied: Student '{st.name}' ({st.enrollment_no}) belongs to another department."
                 )
 
-    try:
-        student_ids = [st.id for st in students]
+    # Protect examination history
+    if not req.force:
+        st_with_history = []
+        for st in students:
+            c = db.query(models.Attempt).filter(
+                models.Attempt.student_id == st.id,
+                or_(models.Attempt.status == "completed", models.Attempt.completed_at != None, models.Attempt.score != None)
+            ).count()
+            if c > 0:
+                st_with_history.append(f"{st.name} ({st.enrollment_no}): {c} completed attempt(s)")
+        if st_with_history:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Bulk deletion blocked: {len(st_with_history)} student(s) have completed examination history with recorded marks: {'; '.join(st_with_history[:5])}. To permanently delete academic records, confirm with force=true."
+            )
 
+    student_ids = [st.id for st in students]
+    try:
         # 1. Collect all attempt IDs
         attempts = db.query(models.Attempt).filter(models.Attempt.student_id.in_(student_ids)).all()
         attempt_ids = [a.id for a in attempts]
@@ -828,14 +1337,19 @@ def admin_bulk_delete_students(
         deleted_count = db.query(models.Student).filter(models.Student.id.in_(student_ids)).delete(synchronize_session=False)
         db.commit()
 
+        log_deletion_audit(admin.username, "BULK_DELETE", "Student", student_ids, "SUCCESS", f"Deleted {deleted_count} students.")
+
         return schemas.BulkDeleteStudentsResponse(
             status="success",
             message=f"Successfully deleted {deleted_count} student(s) and their dependent assessment records.",
             deleted_count=deleted_count,
             student_ids=student_ids
         )
+    except HTTPException:
+        raise
     except Exception as e:
         db.rollback()
+        log_deletion_audit(admin.username, "BULK_DELETE", "Student", student_ids, "FAILED", str(e))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to safely delete selected students: {str(e)}"
@@ -1549,6 +2063,42 @@ def unassign_student_from_exam(exam_id: int, student_id: int, admin: CurrentUser
     return {"message": "Student unassigned from exam successfully."}
 
 
+@router.get("/admin/exams/{exam_id}/dependencies")
+def get_exam_dependencies(
+    exam_id: int,
+    admin: CurrentUser = Depends(require_hod_or_super_admin),
+    db: Session = Depends(get_db)
+):
+    exam = db.query(models.Exam).filter(models.Exam.id == exam_id).first()
+    if not exam:
+        raise HTTPException(status_code=404, detail="Exam not found.")
+    if admin.is_hod and exam.department_id != admin.department_id and exam.department_name != admin.department_name:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Exam does not belong to your department.")
+
+    attempt_cnt = db.query(models.Attempt).filter(models.Attempt.exam_id == exam_id).count()
+    assigned_cnt = db.query(models.ExamStudent).filter(models.ExamStudent.exam_id == exam_id).count()
+    questions_cnt = db.query(models.ExamQuestion).filter(models.ExamQuestion.exam_id == exam_id).count()
+
+    has_dependencies = (attempt_cnt > 0)
+    return {
+        "exam_id": exam.id,
+        "title": exam.title,
+        "code": exam.code,
+        "status": exam.status,
+        "is_active": exam.is_active,
+        "can_delete": not has_dependencies,
+        "has_dependencies": has_dependencies,
+        "attempts_count": attempt_cnt,
+        "assigned_students_count": assigned_cnt,
+        "questions_count": questions_cnt,
+        "reason": (
+            f"Examination has {attempt_cnt} recorded student attempt(s). Completed attempts and marks must be protected. Permanent deletion is blocked; please archive instead."
+            if has_dependencies
+            else f"No student attempts recorded. Exam has {assigned_cnt} assigned students and {questions_cnt} questions that will be safely unmapped."
+        )
+    }
+
+
 @router.delete("/admin/exams/{exam_id}")
 def delete_exam(
     exam_id: int,
@@ -1570,6 +2120,7 @@ def delete_exam(
         exam.updated_at = datetime.utcnow()
         db.commit()
         db.refresh(exam)
+        log_deletion_audit(admin.username, "ARCHIVE", "exam", [exam_id], "SUCCESS", f"Archived {exam.title}")
         return {
             "message": f"Examination '{exam.title}' archived successfully. Historical attempts and marks are protected.",
             "archived": True,
@@ -1583,11 +2134,65 @@ def delete_exam(
             detail=f"Cannot delete examination '{exam.title}' because it has {attempt_cnt} recorded attempt(s). Completed attempts and student marks must be protected. Please archive the examination instead."
         )
 
-    db.query(models.ExamStudent).filter(models.ExamStudent.exam_id == exam_id).delete(synchronize_session=False)
-    db.query(models.ExamQuestion).filter(models.ExamQuestion.exam_id == exam_id).delete(synchronize_session=False)
-    db.delete(exam)
-    db.commit()
-    return {"message": f"Exam '{exam.title}' deleted successfully.", "deleted_id": exam_id}
+    try:
+        ex_title = exam.title
+        db.query(models.ExamStudent).filter(models.ExamStudent.exam_id == exam_id).delete(synchronize_session=False)
+        db.query(models.ExamQuestion).filter(models.ExamQuestion.exam_id == exam_id).delete(synchronize_session=False)
+        db.delete(exam)
+        db.commit()
+        log_deletion_audit(admin.username, "PERMANENT_DELETE", "exam", [exam_id], "SUCCESS", f"Deleted {ex_title}")
+        return {"message": f"Exam '{ex_title}' deleted successfully.", "deleted_id": exam_id}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Database error deleting examination: {str(e)}")
+
+
+@router.post("/admin/exams/bulk-delete", response_model=schemas.BulkDeleteResponse)
+def bulk_delete_exams(
+    req: schemas.BulkDeleteRequest,
+    admin: CurrentUser = Depends(require_hod_or_super_admin),
+    db: Session = Depends(get_db)
+):
+    if not req.ids:
+        raise HTTPException(status_code=400, detail="No exam IDs provided.")
+
+    exams = db.query(models.Exam).filter(models.Exam.id.in_(req.ids)).all()
+    if not exams:
+        raise HTTPException(status_code=404, detail="No matching exams found.")
+
+    if admin.is_hod:
+        for ex in exams:
+            if ex.department_id != admin.department_id and ex.department_name != admin.department_name:
+                raise HTTPException(status_code=403, detail=f"Forbidden: Exam '{ex.title}' belongs to another department.")
+
+    blocked = []
+    for ex in exams:
+        att_cnt = db.query(models.Attempt).filter(models.Attempt.exam_id == ex.id).count()
+        if att_cnt > 0:
+            blocked.append(f"Exam '{ex.title}' (ID {ex.id}): {att_cnt} recorded attempt(s)")
+
+    if blocked:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Bulk exam deletion blocked: One or more selected exams have student attempt records. {'; '.join(blocked)}. Completed student marks must be protected. Please archive them instead."
+        )
+
+    try:
+        deleted_ids = [ex.id for ex in exams]
+        db.query(models.ExamStudent).filter(models.ExamStudent.exam_id.in_(deleted_ids)).delete(synchronize_session=False)
+        db.query(models.ExamQuestion).filter(models.ExamQuestion.exam_id.in_(deleted_ids)).delete(synchronize_session=False)
+        db.query(models.Exam).filter(models.Exam.id.in_(deleted_ids)).delete(synchronize_session=False)
+        db.commit()
+        log_deletion_audit(admin.username, "BULK_PERMANENT_DELETE", "exam", deleted_ids, "SUCCESS")
+        return schemas.BulkDeleteResponse(
+            status="success",
+            message=f"Successfully deleted {len(deleted_ids)} examination(s) with zero attempt records.",
+            deleted_count=len(deleted_ids),
+            deleted_ids=deleted_ids
+        )
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Database error during bulk exam deletion: {str(e)}")
 
 
 @router.post("/admin/exams/{exam_id}/archive")
@@ -2423,6 +3028,42 @@ def get_admin_student_details(
     return get_attempt_result(attempt.id, db)
 
 
+@router.get("/admin/attempts/{attempt_id}/dependencies", response_model=schemas.DependencyCheckResponse)
+def get_attempt_dependencies(
+    attempt_id: int,
+    admin: CurrentUser = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    attempt = db.query(models.Attempt).filter(models.Attempt.id == attempt_id).first()
+    if not attempt:
+        raise HTTPException(status_code=404, detail="Assessment attempt not found.")
+
+    if admin.is_hod:
+        st = db.query(models.Student).filter(models.Student.id == attempt.student_id).first()
+        if not st or (st.department_id != admin.department_id and st.department != admin.department_name):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Cannot access assessment attempt from another department.")
+
+    ans_count = db.query(models.StudentAnswer).filter(models.StudentAnswer.attempt_id == attempt_id).count()
+    log_count = db.query(models.ExamSecurityLog).filter(models.ExamSecurityLog.attempt_id == attempt_id).count()
+
+    exam_title = attempt.exam_title_snapshot or "Exam"
+    student = db.query(models.Student).filter(models.Student.id == attempt.student_id).first()
+    st_name = student.name if student else f"Student #{attempt.student_id}"
+
+    return schemas.DependencyCheckResponse(
+        record_id=attempt_id,
+        record_name=f"Attempt #{attempt_id} ({st_name} - {exam_title})",
+        record_type="attempt",
+        can_delete=True,
+        has_dependencies=ans_count > 0 or log_count > 0,
+        dependency_counts={
+            "student_answers": ans_count,
+            "security_logs": log_count
+        },
+        reason=f"Attempt contains {ans_count} recorded answers and {log_count} security log events that will be permanently removed."
+    )
+
+
 @router.delete("/admin/attempts/{attempt_id}")
 def delete_assessment_attempt(
     attempt_id: int,
@@ -2443,17 +3084,67 @@ def delete_assessment_attempt(
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Cannot delete assessment attempt from another department.")
 
     student_id = attempt.student_id
-    db.query(models.StudentAnswer).filter(models.StudentAnswer.attempt_id == attempt_id).delete(synchronize_session=False)
-    db.query(models.ExamSecurityLog).filter(models.ExamSecurityLog.attempt_id == attempt_id).delete(synchronize_session=False)
-    db.delete(attempt)
-    db.commit()
+    try:
+        db.query(models.StudentAnswer).filter(models.StudentAnswer.attempt_id == attempt_id).delete(synchronize_session=False)
+        db.query(models.ExamSecurityLog).filter(models.ExamSecurityLog.attempt_id == attempt_id).delete(synchronize_session=False)
+        db.delete(attempt)
+        db.commit()
 
-    return {
-        "status": "success",
-        "message": f"Assessment attempt #{attempt_id} deleted successfully.",
-        "attempt_id": attempt_id,
-        "student_id": student_id
-    }
+        log_deletion_audit(admin.username, "SINGLE_DELETE", "Attempt", [attempt_id], "SUCCESS", f"Student ID: {student_id}")
+
+        return {
+            "status": "success",
+            "message": f"Assessment attempt #{attempt_id} deleted successfully.",
+            "attempt_id": attempt_id,
+            "student_id": student_id
+        }
+    except Exception as e:
+        db.rollback()
+        log_deletion_audit(admin.username, "SINGLE_DELETE", "Attempt", [attempt_id], "FAILED", str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to delete assessment attempt: {str(e)}")
+
+
+@router.post("/admin/attempts/bulk-delete", response_model=schemas.BulkDeleteResponse)
+def bulk_delete_attempts(
+    req: schemas.BulkDeleteRequest,
+    admin: CurrentUser = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    if not req.ids:
+        raise HTTPException(status_code=400, detail="No attempt IDs provided for deletion.")
+
+    attempts = db.query(models.Attempt).filter(models.Attempt.id.in_(req.ids)).all()
+    if not attempts:
+        raise HTTPException(status_code=404, detail="No matching assessment attempts found.")
+
+    if admin.is_hod:
+        st_ids = [a.student_id for a in attempts]
+        st_depts = db.query(models.Student.id, models.Student.department_id, models.Student.department).filter(models.Student.id.in_(st_ids)).all()
+        for sid, did, dname in st_depts:
+            if did != admin.department_id and dname != admin.department_name:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied: One or more selected attempts belong to students in another department."
+                )
+
+    attempt_ids = [a.id for a in attempts]
+    try:
+        db.query(models.StudentAnswer).filter(models.StudentAnswer.attempt_id.in_(attempt_ids)).delete(synchronize_session=False)
+        db.query(models.ExamSecurityLog).filter(models.ExamSecurityLog.attempt_id.in_(attempt_ids)).delete(synchronize_session=False)
+        deleted_count = db.query(models.Attempt).filter(models.Attempt.id.in_(attempt_ids)).delete(synchronize_session=False)
+        db.commit()
+
+        log_deletion_audit(admin.username, "BULK_DELETE", "Attempt", attempt_ids, "SUCCESS", f"Deleted {deleted_count} attempts.")
+        return schemas.BulkDeleteResponse(
+            status="success",
+            message=f"Successfully deleted {deleted_count} assessment attempt(s) and their records.",
+            deleted_count=deleted_count,
+            deleted_ids=attempt_ids
+        )
+    except Exception as e:
+        db.rollback()
+        log_deletion_audit(admin.username, "BULK_DELETE", "Attempt", attempt_ids, "FAILED", str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to delete assessment attempts: {str(e)}")
 
 
 # =========================================================================
@@ -2688,6 +3379,50 @@ def deactivate_question(question_id: int, admin: CurrentUser = Depends(get_curre
     return q
 
 
+@router.get("/admin/questions/{question_id}/dependencies", response_model=schemas.DependencyCheckResponse)
+def get_question_dependencies(
+    question_id: int,
+    admin: CurrentUser = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    q = db.query(models.Question).filter(models.Question.id == question_id).first()
+    if not q:
+        raise HTTPException(status_code=404, detail="Question not found.")
+
+    if admin.is_hod:
+        if q.subject_id:
+            subj = db.query(models.Subject).filter(models.Subject.id == q.subject_id).first()
+            if not subj or subj.department_id != admin.department_id:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Question does not belong to your department.")
+        elif q.department_id and q.department_id != admin.department_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Question does not belong to your department.")
+
+    usage_count = db.query(models.StudentAnswer).filter(models.StudentAnswer.question_id == question_id).count()
+    exam_usage = db.query(models.ExamQuestion).filter(models.ExamQuestion.question_id == question_id).count()
+
+    can_delete = (usage_count == 0 and exam_usage == 0)
+    reasons = []
+    if usage_count > 0:
+        reasons.append(f"{usage_count} student answer(s)")
+    if exam_usage > 0:
+        reasons.append(f"{exam_usage} examination(s)")
+
+    reason_str = f"Referenced by {', '.join(reasons)}. Question cannot be permanently deleted to protect academic integrity. Please deactivate it instead." if not can_delete else "Question is not referenced by any exams or student answers and can be safely deleted."
+
+    return schemas.DependencyCheckResponse(
+        record_id=question_id,
+        record_name=q.question_text[:50] + ("..." if len(q.question_text) > 50 else ""),
+        record_type="question",
+        can_delete=can_delete,
+        has_dependencies=(usage_count > 0 or exam_usage > 0),
+        dependency_counts={
+            "student_answers": usage_count,
+            "exams": exam_usage
+        },
+        reason=reason_str
+    )
+
+
 @router.delete("/admin/questions/{question_id}")
 def delete_question(question_id: int, admin: CurrentUser = Depends(get_current_admin), db: Session = Depends(get_db)):
     """
@@ -2711,9 +3446,68 @@ def delete_question(question_id: int, admin: CurrentUser = Depends(get_current_a
             detail=f"Question #{question_id} cannot be permanently deleted because it is referenced in {usage_count} student answer(s) and {exam_usage} exam(s). Please deactivate it instead to protect historical assessment records."
         )
 
-    db.delete(q)
-    db.commit()
-    return {"message": f"Question #{question_id} deleted permanently.", "id": question_id}
+    try:
+        db.delete(q)
+        db.commit()
+        log_deletion_audit(admin.username, "SINGLE_DELETE", "Question", [question_id], "SUCCESS")
+        return {"message": f"Question #{question_id} deleted permanently.", "id": question_id}
+    except Exception as e:
+        db.rollback()
+        log_deletion_audit(admin.username, "SINGLE_DELETE", "Question", [question_id], "FAILED", str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to delete question: {str(e)}")
+
+
+@router.post("/admin/questions/bulk-delete", response_model=schemas.BulkDeleteResponse)
+def bulk_delete_questions(
+    req: schemas.BulkDeleteRequest,
+    admin: CurrentUser = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    if not req.ids:
+        raise HTTPException(status_code=400, detail="No question IDs provided for deletion.")
+
+    questions = db.query(models.Question).filter(models.Question.id.in_(req.ids)).all()
+    if not questions:
+        raise HTTPException(status_code=404, detail="No matching questions found.")
+
+    if admin.is_hod:
+        dept_subj_ids = {s.id for s in db.query(models.Subject.id).filter(models.Subject.department_id == admin.department_id).all()}
+        for q in questions:
+            is_in_dept = (q.department_id == admin.department_id) or (q.subject_id in dept_subj_ids)
+            if not is_in_dept:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Access denied: Question #{q.id} does not belong to your department."
+                )
+
+    blocked = []
+    for q in questions:
+        ans_c = db.query(models.StudentAnswer).filter(models.StudentAnswer.question_id == q.id).count()
+        exam_c = db.query(models.ExamQuestion).filter(models.ExamQuestion.question_id == q.id).count()
+        if ans_c > 0 or exam_c > 0:
+            blocked.append(f"Question #{q.id} (used in {ans_c} answers, {exam_c} exams)")
+
+    if blocked:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Bulk delete blocked: {len(blocked)} question(s) are referenced by examinations or attempts and cannot be deleted: {'; '.join(blocked[:5])}. Please deactivate them instead to protect examination history."
+        )
+
+    q_ids = [q.id for q in questions]
+    try:
+        deleted_count = db.query(models.Question).filter(models.Question.id.in_(q_ids)).delete(synchronize_session=False)
+        db.commit()
+        log_deletion_audit(admin.username, "BULK_DELETE", "Question", q_ids, "SUCCESS", f"Deleted {deleted_count} questions.")
+        return schemas.BulkDeleteResponse(
+            status="success",
+            message=f"Successfully deleted {deleted_count} question(s) permanently.",
+            deleted_count=deleted_count,
+            deleted_ids=q_ids
+        )
+    except Exception as e:
+        db.rollback()
+        log_deletion_audit(admin.username, "BULK_DELETE", "Question", q_ids, "FAILED", str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to delete questions: {str(e)}")
 
 
 # =========================================================================
@@ -3078,4 +3872,152 @@ def export_students_csv(
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
+
+
+# =========================================================================
+# 14. DATABASE SAFETY & VERIFIED SYSTEM BACKUPS
+# =========================================================================
+
+BACKUP_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "db_backups")
+os.makedirs(BACKUP_DIR, exist_ok=True)
+
+@router.post("/admin/backup/create")
+def create_system_backup(
+    admin: CurrentUser = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    Creates a verified JSON snapshot backup of all database tables.
+    Computes SHA-256 hash and records verification metadata.
+    """
+    import hashlib
+    now_str = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    backup_filename = f"backup_assessment_system_{now_str}.json"
+    backup_path = os.path.join(BACKUP_DIR, backup_filename)
+
+    tables_data = {}
+    table_counts = {}
+
+    model_list = [
+        ("admin_users", models.AdminUser, ["id", "username", "email", "full_name", "role", "department_id", "department_name", "is_active", "created_at"]),
+        ("departments", models.Department, ["id", "name", "code", "description", "is_active", "created_at"]),
+        ("programs", models.Program, ["id", "name", "code", "department_id", "is_active", "created_at"]),
+        ("academic_years", models.AcademicYear, ["id", "name", "code", "department_id", "program_id", "is_active", "created_at"]),
+        ("semesters", models.Semester, ["id", "name", "code", "department_id", "program_id", "academic_year_id", "is_active", "created_at"]),
+        ("subjects", models.Subject, ["id", "name", "code", "department_id", "department_name", "program_id", "academic_year_id", "semester_id", "is_active", "created_at"]),
+        ("questions", models.Question, ["id", "question_text", "option_a", "option_b", "option_c", "option_d", "correct_answer", "topic", "department_id", "subject_id", "difficulty", "marks", "is_active", "created_at"]),
+        ("exams", models.Exam, ["id", "title", "code", "department_id", "subject_id", "duration_minutes", "total_questions", "total_marks", "passing_percentage", "selection_mode", "status", "is_active", "created_at"]),
+        ("exam_questions", models.ExamQuestion, ["id", "exam_id", "question_id", "order_index"]),
+        ("students", models.Student, ["id", "enrollment_no", "name", "department", "department_id", "gender", "program", "year", "semester", "is_active", "created_at"]),
+        ("exam_students", models.ExamStudent, ["id", "exam_id", "student_id", "assigned_at"]),
+        ("attempts", models.Attempt, ["id", "student_id", "exam_id", "exam_title_snapshot", "subject_name_snapshot", "total_questions", "score", "percentage", "status", "started_at", "completed_at"]),
+        ("student_answers", models.StudentAnswer, ["id", "attempt_id", "question_number", "question_id", "selected_answer", "correct_answer", "marks", "is_correct"]),
+        ("exam_security_logs", models.ExamSecurityLog, ["id", "attempt_id", "student_id", "event_type", "details", "occurred_at"]),
+        ("assessment_settings", models.AssessmentSetting, ["id", "question_count", "time_limit_minutes", "updated_at"]),
+    ]
+
+    for tbl_name, model_cls, cols in model_list:
+        records = db.query(model_cls).all()
+        table_counts[tbl_name] = len(records)
+        serialized = []
+        for r in records:
+            item = {}
+            for c in cols:
+                val = getattr(r, c, None)
+                if isinstance(val, datetime):
+                    val = val.isoformat()
+                item[c] = val
+            serialized.append(item)
+        tables_data[tbl_name] = serialized
+
+    content_str = json.dumps({
+        "metadata": {
+            "backup_version": "1.0",
+            "created_at": datetime.utcnow().isoformat(),
+            "created_by": admin.username,
+            "table_counts": table_counts,
+            "total_records": sum(table_counts.values())
+        },
+        "data": tables_data
+    }, indent=2)
+
+    sha256 = hashlib.sha256(content_str.encode("utf-8")).hexdigest()
+
+    with open(backup_path, "w", encoding="utf-8") as f:
+        f.write(content_str)
+
+    # Index entry
+    index_path = os.path.join(BACKUP_DIR, "index.json")
+    backups_list = []
+    if os.path.exists(index_path):
+        try:
+            with open(index_path, "r", encoding="utf-8") as f:
+                backups_list = json.load(f)
+        except Exception:
+            backups_list = []
+
+    backup_info = {
+        "filename": backup_filename,
+        "created_at": datetime.utcnow().isoformat(),
+        "created_by": admin.username,
+        "sha256": sha256,
+        "total_records": sum(table_counts.values()),
+        "table_counts": table_counts,
+        "size_kb": round(len(content_str) / 1024, 2)
+    }
+    backups_list.insert(0, backup_info)
+    with open(index_path, "w", encoding="utf-8") as f:
+        json.dump(backups_list, f, indent=2)
+
+    log_deletion_audit(admin.username, "BACKUP_CREATE", "SystemBackup", [], "SUCCESS", f"Created backup {backup_filename}")
+
+    return {
+        "status": "success",
+        "message": f"Database backup '{backup_filename}' created and verified.",
+        "backup": backup_info
+    }
+
+
+@router.get("/admin/backup/list")
+def list_system_backups(
+    admin: CurrentUser = Depends(get_current_admin)
+):
+    index_path = os.path.join(BACKUP_DIR, "index.json")
+    if not os.path.exists(index_path):
+        return []
+    try:
+        with open(index_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+@router.post("/admin/backup/verify")
+def verify_system_backup(
+    data: Dict[str, str],
+    admin: CurrentUser = Depends(get_current_admin)
+):
+    import hashlib
+    filename = data.get("filename", "")
+    backup_path = os.path.join(BACKUP_DIR, filename)
+    if not os.path.exists(backup_path):
+        raise HTTPException(status_code=404, detail="Backup file not found.")
+
+    with open(backup_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    try:
+        parsed = json.loads(content)
+        calc_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        meta = parsed.get("metadata", {})
+        return {
+            "status": "verified",
+            "filename": filename,
+            "calculated_sha256": calc_hash,
+            "recorded_total_records": meta.get("total_records", 0),
+            "table_counts": meta.get("table_counts", {}),
+            "created_at": meta.get("created_at")
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Backup verification failed: {str(e)}")
 

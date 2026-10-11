@@ -34,7 +34,7 @@ def test_exam_lifecycle_department_subject_and_safe_delete():
             db.refresh(dept_it)
 
         # Subject for CSE
-        subj_cse = db.query(models.Subject).filter(models.Subject.department_id == dept_cse.id).first()
+        subj_cse = db.query(models.Subject).filter(models.Subject.department_id == dept_cse.id, models.Subject.is_active == True).first()
         if not subj_cse:
             subj_cse = models.Subject(
                 name=f"Data Structures {ts}",
