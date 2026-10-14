@@ -155,6 +155,9 @@ class Exam(Base):
     passing_percentage = Column(Float, default=40.0, nullable=False)
     selection_mode = Column(String, default="random", nullable=False)  # 'random' | 'manual'
     status = Column(String, default="draft", nullable=False)          # 'draft' | 'published' | 'closed'
+    session_code_hash = Column(String, nullable=True)
+    session_code_rotated_at = Column(DateTime, nullable=True)
+    result_release_mode = Column(String, default="after_close", nullable=False)
     is_active = Column(Boolean, default=True, index=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

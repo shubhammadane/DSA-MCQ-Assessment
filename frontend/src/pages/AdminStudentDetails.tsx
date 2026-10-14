@@ -12,7 +12,7 @@ export const AdminStudentDetails: React.FC = () => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const token = localStorage.getItem('admin_token');
+    const token = sessionStorage.getItem('admin_token');
     if (!token) {
       navigate('/admin/login');
       return;
@@ -25,7 +25,7 @@ export const AdminStudentDetails: React.FC = () => {
       } catch (err: any) {
         console.error('Failed to load student details:', err);
         if (err.response?.status === 401) {
-          localStorage.removeItem('admin_token');
+          sessionStorage.removeItem('admin_token');
           navigate('/admin/login');
         }
       } finally {

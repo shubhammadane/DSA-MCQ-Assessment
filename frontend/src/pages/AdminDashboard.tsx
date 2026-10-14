@@ -8,7 +8,7 @@ import {
   UploadCloud, FileSpreadsheet, ShieldAlert, Lock, ArrowRight, ArrowLeft,
   Archive, ArchiveRestore
 } from 'lucide-react';
-import api, { API_BASE_URL } from '../services/api';
+import api from '../services/api';
 import { CollegeBranding } from '../components/CollegeBranding';
 import type {
   AdminStats, StudentSummary, AdminQuestion, AssessmentSettings,
@@ -115,7 +115,7 @@ export const AdminDashboard: React.FC = () => {
   const [stFormProg, setStFormProg] = useState('UG');
   const [stFormYear, setStFormYear] = useState('1st Year');
   const [stFormSem, setStFormSem] = useState('Semester 1');
-  const [stFormPassword, setStFormPassword] = useState('student123');
+  const [stFormPassword, setStFormPassword] = useState('');
 
   // Question Management State
   const [questions, setQuestions] = useState<AdminQuestion[]>([]);
@@ -139,6 +139,11 @@ export const AdminDashboard: React.FC = () => {
   const [qFormMarks, setQFormMarks] = useState<number>(1);
   const [qFormSubjectId, setQFormSubjectId] = useState<number | ''>('');
   const [qFormDeptId, setQFormDeptId] = useState<number | ''>('');
+  const [showQuestionImportModal, setShowQuestionImportModal] = useState(false);
+  const [questionImportFile, setQuestionImportFile] = useState<File | null>(null);
+  const [questionImportSubjectId, setQuestionImportSubjectId] = useState<number | ''>('');
+  const [questionImportPreview, setQuestionImportPreview] = useState<any | null>(null);
+  const [questionImportLoading, setQuestionImportLoading] = useState(false);
 
   // Exam Management State
   const [exams, setExams] = useState<Exam[]>([]);
@@ -159,6 +164,7 @@ export const AdminDashboard: React.FC = () => {
   const [examToArchive, setExamToArchive] = useState<Exam | null>(null);
   const [showExamArchiveModal, setShowExamArchiveModal] = useState(false);
   const [examArchiveLoading, setExamArchiveLoading] = useState(false);
+  const [sessionCodeDisplay, setSessionCodeDisplay] = useState<{ examTitle: string; code: string } | null>(null);
 
   // Exam Form State
   const [examFormTitle, setExamFormTitle] = useState('');
@@ -175,7 +181,10 @@ export const AdminDashboard: React.FC = () => {
   const [examFormSelectionMode, setExamFormSelectionMode] = useState<'random' | 'manual'>('random');
   const [examFormStatus, setExamFormStatus] = useState<string>('published');
   const [examFormStartDate, setExamFormStartDate] = useState('');
+  const [examFormStartTime, setExamFormStartTime] = useState('');
   const [examFormEndDate, setExamFormEndDate] = useState('');
+  const [examFormEndTime, setExamFormEndTime] = useState('');
+  const [examFormResultRelease, setExamFormResultRelease] = useState<'immediate' | 'after_close'>('after_close');
 
   // Student Assessment Records State
   const [studentRecords, setStudentRecords] = useState<StudentSummary[]>([]);
@@ -235,15 +244,6 @@ export const AdminDashboard: React.FC = () => {
   // INITIALIZATION & DATA FETCHING
   // ==========================================
 
-  useEffect(() => {
-    const token = localStorage.getItem('admin_token');
-    if (!token) {
-      navigate('/admin/login');
-      return;
-    }
-    loadOverview();
-  }, [navigate]);
-
   const loadOverview = async () => {
     setLoading(true);
     try {
@@ -291,7 +291,7 @@ export const AdminDashboard: React.FC = () => {
       }
     } catch (err: any) {
       if (err.response?.status === 401) {
-        localStorage.removeItem('admin_token');
+        sessionStorage.removeItem('admin_token');
         localStorage.removeItem('admin_user');
         navigate('/admin/login');
       } else {
@@ -301,28 +301,6 @@ export const AdminDashboard: React.FC = () => {
       setLoading(false);
     }
   };
-
-  // Reload relevant datasets on tab change
-  useEffect(() => {
-    loadAcademicData();
-    if (activeTab === 'academic') {
-      loadAcademicData();
-    } else if (activeTab === 'subjects') {
-      loadSubjects();
-    } else if (activeTab === 'students') {
-      loadStudents();
-    } else if (activeTab === 'questions') {
-      loadQuestions();
-      loadSubjects();
-    } else if (activeTab === 'exams') {
-      loadExams();
-      loadSubjects();
-    } else if (activeTab === 'records') {
-      loadRecords();
-    } else if (activeTab === 'settings') {
-      loadSettings();
-    }
-  }, [activeTab]);
 
   const loadAcademicData = async () => {
     try {
@@ -412,6 +390,38 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
+  useEffect(() => {
+    const token = sessionStorage.getItem('admin_token');
+    if (!token) {
+      navigate('/admin/login');
+      return;
+    }
+    loadOverview();
+    // Initial authentication/bootstrap fetch intentionally runs once per navigation instance.
+    // oxlint-disable-next-line react-hooks/exhaustive-deps, react(set-state-in-effect)
+  }, [navigate]);
+
+  useEffect(() => {
+    loadAcademicData();
+    if (activeTab === 'subjects') {
+      loadSubjects();
+    } else if (activeTab === 'students') {
+      loadStudents();
+    } else if (activeTab === 'questions') {
+      loadQuestions();
+      loadSubjects();
+    } else if (activeTab === 'exams') {
+      loadExams();
+      loadSubjects();
+    } else if (activeTab === 'records') {
+      loadRecords();
+    } else if (activeTab === 'settings') {
+      loadSettings();
+    }
+    // Loader functions are intentionally scoped to the selected tab.
+    // oxlint-disable-next-line react-hooks/exhaustive-deps, react(set-state-in-effect)
+  }, [activeTab]);
+
   const handleCreateBackup = async () => {
     setCreatingBackup(true);
     try {
@@ -466,7 +476,7 @@ export const AdminDashboard: React.FC = () => {
   };
 
   const handleLogout = () => {
-    localStorage.removeItem('admin_token');
+    sessionStorage.removeItem('admin_token');
     localStorage.removeItem('admin_user');
     navigate('/admin/login');
   };
@@ -747,7 +757,7 @@ export const AdminDashboard: React.FC = () => {
     setStFormProg('UG');
     setStFormYear('1st Year');
     setStFormSem('Semester 1');
-    setStFormPassword('student123');
+    setStFormPassword('');
     setShowAddStudentModal(true);
   };
 
@@ -837,6 +847,15 @@ export const AdminDashboard: React.FC = () => {
       const res = await api.post('/admin/students/bulk-import', formData, {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
+      if (res.data.credentials?.length) {
+        const rows = ['Enrollment No,Temporary Password', ...res.data.credentials.map((item: any) => `${item.enrollment_no},${item.temporary_password}`)];
+        const blob = new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = `student-temporary-credentials-${new Date().toISOString().slice(0, 10)}.csv`;
+        link.click();
+        URL.revokeObjectURL(link.href);
+      }
       showNotice('success', res.data.message || 'Students imported successfully.');
       setShowBulkImportModal(false);
       setImportFile(null);
@@ -845,6 +864,46 @@ export const AdminDashboard: React.FC = () => {
       showNotice('error', err.response?.data?.detail || 'Student bulk import failed.');
     } finally {
       setImportLoading(false);
+    }
+  };
+
+  const handleQuestionImport = async (previewOnly: boolean) => {
+    if (!questionImportFile || !questionImportSubjectId) {
+      showNotice('error', 'Select a subject and a CSV, XLSX, or PDF question file.');
+      return;
+    }
+    setQuestionImportLoading(true);
+    const formData = new FormData();
+    formData.append('file', questionImportFile);
+    formData.append('subject_id', String(questionImportSubjectId));
+    formData.append('preview_only', String(previewOnly));
+    try {
+      const res = await api.post('/admin/questions/bulk-import', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      setQuestionImportPreview(res.data);
+      if (!previewOnly) {
+        showNotice('success', res.data.message || 'Questions imported successfully.');
+        setShowQuestionImportModal(false);
+        setQuestionImportFile(null);
+        setQuestionImportPreview(null);
+        loadQuestions();
+      }
+    } catch (err: any) {
+      const detail = err.response?.data?.detail;
+      showNotice('error', typeof detail === 'string' ? detail : detail?.message || 'Question import failed.');
+    } finally {
+      setQuestionImportLoading(false);
+    }
+  };
+
+  const handleRotateSessionCode = async (exam: Exam) => {
+    try {
+      const res = await api.post(`/admin/exams/${exam.id}/session-code`);
+      setSessionCodeDisplay({ examTitle: exam.title, code: res.data.session_code });
+      setExams(prev => prev.map(item => item.id === exam.id ? { ...item, has_session_code: true, session_code_rotated_at: res.data.rotated_at } : item));
+    } catch (err: any) {
+      showNotice('error', err.response?.data?.detail || 'Could not generate the session code.');
     }
   };
 
@@ -900,17 +959,25 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
-  const handleDownloadStudentData = (format: 'xlsx' | 'csv', specificStudentIds?: number[]) => {
-    const token = localStorage.getItem('admin_token');
-    let url = `${API_BASE_URL}/admin/export/students?format=${format}&token=${token}`;
-    if (studentDeptFilter) {
-      url += `&department=${encodeURIComponent(studentDeptFilter)}`;
+  const downloadAuthenticatedExport = async (path: string, filename: string, params?: Record<string, string>) => {
+    const response = await api.get(path, { params, responseType: 'blob' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(response.data);
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  };
+
+  const handleDownloadStudentData = async (format: 'xlsx' | 'csv', specificStudentIds?: number[]) => {
+    try {
+      const params: Record<string, string> = { format };
+      if (studentDeptFilter) params.department = studentDeptFilter;
+      if (specificStudentIds?.length) params.student_ids = specificStudentIds.join(',');
+      await downloadAuthenticatedExport('/admin/export/students', `students.${format}`, params);
+      showNotice('success', `Downloaded ${format.toUpperCase()} student data.`);
+    } catch (err: any) {
+      showNotice('error', err.response?.data?.detail || 'Student export failed.');
     }
-    if (specificStudentIds && specificStudentIds.length > 0) {
-      url += `&student_ids=${specificStudentIds.join(',')}`;
-    }
-    window.open(url, '_blank');
-    showNotice('success', `Initiated ${format.toUpperCase()} export for student data.`);
   };
 
 
@@ -1105,7 +1172,11 @@ export const AdminDashboard: React.FC = () => {
     setExamFormSelectionMode('random');
     setExamFormStatus('published');
     setExamFormStartDate('');
+    setExamFormStartTime('');
     setExamFormEndDate('');
+    setExamFormEndTime('');
+    setExamFormResultRelease('after_close');
+    setSelectedQuestionIds([]);
     setShowCreateExamModal(true);
   };
 
@@ -1121,6 +1192,10 @@ export const AdminDashboard: React.FC = () => {
     }
     if (!examFormSubjectId) {
       showNotice('error', 'Subject is required. Please select a Subject for this examination.');
+      return;
+    }
+    if (examFormSelectionMode === 'manual' && selectedQuestionIds.length !== examFormQuestionsCount) {
+      showNotice('error', `Select exactly ${examFormQuestionsCount} active questions for manual mode.`);
       return;
     }
 
@@ -1139,9 +1214,13 @@ export const AdminDashboard: React.FC = () => {
         total_marks: examFormQuestionsCount * examFormMarksPerQ,
         passing_percentage: examFormPassingPct,
         selection_mode: examFormSelectionMode,
+        selected_question_ids: examFormSelectionMode === 'manual' ? selectedQuestionIds : undefined,
         status: examFormStatus,
         start_date: examFormStartDate || undefined,
-        end_date: examFormEndDate || undefined
+        start_time: examFormStartTime || undefined,
+        end_date: examFormEndDate || undefined,
+        end_time: examFormEndTime || undefined,
+        result_release_mode: examFormResultRelease
       };
 
       if (editingExam) {
@@ -1278,7 +1357,7 @@ export const AdminDashboard: React.FC = () => {
     try {
       const res = await api.get(`/admin/students/${rec.student_id}${rec.attempt_id ? `?attempt_id=${rec.attempt_id}` : ''}`);
       setInspectingAttempt(res.data);
-    } catch (err: any) {
+    } catch {
       showNotice('error', 'Failed to load attempt details.');
     }
   };
@@ -1404,14 +1483,12 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
-  const handleExportExcel = () => {
-    const token = localStorage.getItem('admin_token') || '';
-    window.open(`${API_BASE_URL}/admin/export/excel?token=${token}`, '_blank');
+  const handleExportExcel = async () => {
+    await downloadAuthenticatedExport('/admin/export/excel', 'assessment-results.xlsx');
   };
 
-  const handleExportCSV = () => {
-    const token = localStorage.getItem('admin_token') || '';
-    window.open(`${API_BASE_URL}/admin/export/csv?token=${token}`, '_blank');
+  const handleExportCSV = async () => {
+    await downloadAuthenticatedExport('/admin/export/csv', 'assessment-results.csv');
   };
 
   // Filtered Subjects for Exam Modal strictly bounded to selected Department
@@ -2672,6 +2749,18 @@ export const AdminDashboard: React.FC = () => {
                   </button>
                 )}
                 <button
+                  onClick={() => {
+                    setQuestionImportFile(null);
+                    setQuestionImportPreview(null);
+                    setQuestionImportSubjectId(questionSubjectFilter ? Number(questionSubjectFilter) : '');
+                    setShowQuestionImportModal(true);
+                  }}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5"
+                >
+                  <UploadCloud className="w-4 h-4" />
+                  <span>Import PDF / Excel</span>
+                </button>
+                <button
                   onClick={openAddQuestionModal}
                   className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 transition-colors cursor-pointer"
                 >
@@ -3128,6 +3217,14 @@ export const AdminDashboard: React.FC = () => {
                             >
                               <UserCheck className="w-3.5 h-3.5" />
                               <span>Assign</span>
+                            </button>
+                            <button
+                              onClick={() => handleRotateSessionCode(ex)}
+                              className="px-2.5 py-1 bg-violet-600 hover:bg-violet-700 text-white rounded-lg text-xs font-bold inline-flex items-center space-x-1"
+                              title="Generate a new one-time session code and invalidate the previous code"
+                            >
+                              <Lock className="w-3.5 h-3.5" />
+                              <span>{ex.has_session_code ? 'New Code' : 'Create Code'}</span>
                             </button>
                             <button
                               onClick={() => handleToggleExamStatus(ex, ex.status === 'published' ? 'closed' : 'published')}
@@ -4133,7 +4230,9 @@ export const AdminDashboard: React.FC = () => {
                 <label className="block text-slate-700 font-semibold mb-1">Password or Secure PIN</label>
                 <input
                   type="password"
-                  placeholder="Default (Roll Number)"
+                  required={!editingStudent}
+                  minLength={8}
+                  placeholder={editingStudent ? 'Leave blank to keep current password' : 'At least 8 characters'}
                   value={stFormPassword}
                   onChange={(e) => setStFormPassword(e.target.value)}
                   className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium placeholder-slate-400 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
@@ -4709,7 +4808,23 @@ export const AdminDashboard: React.FC = () => {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              {examFormSelectionMode === 'manual' && (
+                <div className="border border-slate-200 rounded-xl p-3 max-h-48 overflow-y-auto space-y-2">
+                  <p className="font-bold text-slate-700 sticky top-0 bg-white pb-1">Select {examFormQuestionsCount} questions ({selectedQuestionIds.length} selected)</p>
+                  {questions.filter(question => question.is_active && question.subject_id === Number(examFormSubjectId)).map(question => (
+                    <label key={question.id} className="flex items-start gap-2 text-xs text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={selectedQuestionIds.includes(question.id)}
+                        onChange={(event) => setSelectedQuestionIds(previous => event.target.checked ? [...previous, question.id] : previous.filter(id => id !== question.id))}
+                      />
+                      <span>{question.question_text}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 <div>
                   <label className="block text-slate-700 font-semibold mb-1">Start Date (Optional)</label>
                   <input
@@ -4720,6 +4835,10 @@ export const AdminDashboard: React.FC = () => {
                   />
                 </div>
                 <div>
+                  <label className="block text-slate-700 font-semibold mb-1">Start Time</label>
+                  <input type="time" value={examFormStartTime} onChange={(e) => setExamFormStartTime(e.target.value)} disabled={!examFormStartDate} className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-900" />
+                </div>
+                <div>
                   <label className="block text-slate-700 font-semibold mb-1">End Date (Optional)</label>
                   <input
                     type="date"
@@ -4728,6 +4847,18 @@ export const AdminDashboard: React.FC = () => {
                     className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
                   />
                 </div>
+                <div>
+                  <label className="block text-slate-700 font-semibold mb-1">End Time</label>
+                  <input type="time" value={examFormEndTime} onChange={(e) => setExamFormEndTime(e.target.value)} disabled={!examFormEndDate} className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-900" />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-slate-700 font-semibold mb-1">Release question review</label>
+                <select value={examFormResultRelease} onChange={(e) => setExamFormResultRelease(e.target.value as 'immediate' | 'after_close')} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900">
+                  <option value="after_close">After exam closes (recommended)</option>
+                  <option value="immediate">Immediately after submission</option>
+                </select>
               </div>
 
               <div className="flex items-center space-x-3 pt-3">
@@ -4887,6 +5018,64 @@ export const AdminDashboard: React.FC = () => {
       {/* ========================================================= */}
       {/* MODAL 7: ADD / EDIT QUESTION                              */}
       {/* ========================================================= */}
+      {showQuestionImportModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl w-full max-w-2xl p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="font-bold text-slate-900">Import reviewed MCQ questions</h3>
+                <p className="text-xs text-slate-500 mt-1">Upload CSV/XLSX columns for question_text, option_a–d and correct_answer, or a text PDF using numbered questions, A–D options and “Answer: A”.</p>
+              </div>
+              <button onClick={() => setShowQuestionImportModal(false)} className="p-2 text-slate-500"><X className="w-5 h-5" /></button>
+            </div>
+            <select
+              value={questionImportSubjectId}
+              onChange={(event) => { setQuestionImportSubjectId(event.target.value ? Number(event.target.value) : ''); setQuestionImportPreview(null); }}
+              className="w-full p-3 border border-slate-300 rounded-xl text-sm"
+            >
+              <option value="">Select target subject…</option>
+              {subjects.filter(subject => subject.is_active).map(subject => <option key={subject.id} value={subject.id}>{subject.name} — {subject.department_name}</option>)}
+            </select>
+            <input
+              type="file"
+              accept=".csv,.xlsx,.pdf"
+              onChange={(event) => { setQuestionImportFile(event.target.files?.[0] || null); setQuestionImportPreview(null); }}
+              className="w-full p-3 border border-dashed border-slate-300 rounded-xl text-sm"
+            />
+            {questionImportPreview && (
+              <div className={`rounded-xl border p-4 text-xs ${questionImportPreview.error_count ? 'bg-rose-50 border-rose-200' : 'bg-emerald-50 border-emerald-200'}`}>
+                <p className="font-bold">{questionImportPreview.valid_count} valid question(s), {questionImportPreview.error_count} error(s)</p>
+                {questionImportPreview.errors?.slice(0, 8).map((error: string) => <p key={error} className="mt-1 text-rose-700">{error}</p>)}
+                {questionImportPreview.questions?.slice(0, 3).map((question: any) => <p key={`${question.source_row}-${question.question_text}`} className="mt-2 text-slate-700"><strong>Preview:</strong> {question.question_text}</p>)}
+              </div>
+            )}
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setShowQuestionImportModal(false)} className="px-4 py-2 border border-slate-300 rounded-xl text-sm font-semibold">Cancel</button>
+              <button onClick={() => handleQuestionImport(true)} disabled={questionImportLoading} className="px-4 py-2 bg-slate-700 text-white rounded-xl text-sm font-bold disabled:opacity-50">Preview</button>
+              <button onClick={() => handleQuestionImport(false)} disabled={questionImportLoading || !questionImportPreview?.can_commit} className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-sm font-bold disabled:opacity-40">Confirm import</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {sessionCodeDisplay && (
+        <div className="fixed inset-0 z-50 bg-slate-950/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl w-full max-w-md p-6 space-y-4 text-center">
+            <Lock className="w-8 h-8 text-violet-600 mx-auto" />
+            <div>
+              <h3 className="font-bold text-slate-900">New code for {sessionCodeDisplay.examTitle}</h3>
+              <p className="text-xs text-amber-700 mt-1">This code is shown only once. The previous code no longer works.</p>
+            </div>
+            <div className="text-3xl tracking-[0.35em] font-black font-mono bg-slate-100 border border-slate-200 rounded-xl p-4">{sessionCodeDisplay.code}</div>
+            <button
+              onClick={() => navigator.clipboard.writeText(sessionCodeDisplay.code)}
+              className="w-full py-2.5 border border-violet-300 text-violet-700 rounded-xl font-bold"
+            >Copy code</button>
+            <button onClick={() => setSessionCodeDisplay(null)} className="w-full py-2.5 bg-violet-600 text-white rounded-xl font-bold">I stored it securely</button>
+          </div>
+        </div>
+      )}
+
       {showAddQuestionModal && (
         <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white border border-slate-200 rounded-3xl max-w-xl w-full p-6 space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">

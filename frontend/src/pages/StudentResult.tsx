@@ -113,7 +113,7 @@ export const StudentResult: React.FC = () => {
               <div className="bg-slate-50 border border-slate-200 p-5 rounded-2xl text-center space-y-1">
                 <span className="text-xs text-slate-500 uppercase font-semibold">Score</span>
                 <p className="text-2xl md:text-3xl font-black text-blue-600">
-                  {attempt.score} <span className="text-sm font-normal text-slate-500">/ {attempt.total_questions}</span>
+                  {attempt.score} <span className="text-sm font-normal text-slate-500">/ {result.maximum_score}</span>
                 </p>
               </div>
 
@@ -128,14 +128,14 @@ export const StudentResult: React.FC = () => {
               </div>
 
               <div className="bg-slate-50 border border-slate-200 p-5 rounded-2xl text-center space-y-1">
-                <span className="text-xs text-slate-500 uppercase font-semibold">Wrong / Unanswered</span>
+                <span className="text-xs text-slate-500 uppercase font-semibold">Wrong or Unanswered</span>
                 <p className="text-2xl md:text-3xl font-black text-rose-600">{attempt.wrong_answers}</p>
               </div>
             </div>
           </div>
         </div>
 
-        <div className="space-y-6">
+        {result.review_available ? <div className="space-y-6">
           <div className="flex items-center justify-between">
             <h2 className="text-xl font-bold text-slate-900">Question-Wise Review</h2>
             <span className="text-xs text-slate-500 font-medium">Showing all {attempt.total_questions} questions</span>
@@ -227,7 +227,12 @@ export const StudentResult: React.FC = () => {
               );
             })}
           </div>
-        </div>
+        </div> : (
+          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-6 text-amber-800">
+            <h2 className="font-bold">Question review is not available yet</h2>
+            <p className="text-sm mt-1">{result.review_message || 'Your teacher will release the answer review after the examination closes.'}</p>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -24,7 +24,10 @@ export const StudentTest: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
-  const [studentInfo, setStudentInfo] = useState<{ name: string; enrollment_no: string; department: string } | null>(null);
+  const [studentInfo] = useState<{ name: string; enrollment_no: string; department: string } | null>(() => {
+    const cachedStudent = sessionStorage.getItem('student');
+    return cachedStudent ? JSON.parse(cachedStudent) : null;
+  });
 
   // Exam / Attempt details
   const [examTitle, setExamTitle] = useState<string>('Online Assessment');
@@ -162,11 +165,6 @@ export const StudentTest: React.FC = () => {
 
   // Initial Data Fetch
   useEffect(() => {
-    const cachedStudent = sessionStorage.getItem('student');
-    if (cachedStudent) {
-      setStudentInfo(JSON.parse(cachedStudent));
-    }
-
     if (!attemptId) {
       navigate('/');
       return;

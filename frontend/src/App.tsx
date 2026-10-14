@@ -1,17 +1,19 @@
-import React from 'react';
+import React, { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { StudentRegistration } from './pages/StudentRegistration';
-import { StudentDashboard } from './pages/StudentDashboard';
-import { StudentTest } from './pages/StudentTest';
-import { StudentResult } from './pages/StudentResult';
-import { AdminLogin } from './pages/AdminLogin';
-import { AdminDashboard } from './pages/AdminDashboard';
-import { AdminStudentDetails } from './pages/AdminStudentDetails';
+
+const StudentRegistration = lazy(() => import('./pages/StudentRegistration').then(module => ({ default: module.StudentRegistration })));
+const StudentDashboard = lazy(() => import('./pages/StudentDashboard').then(module => ({ default: module.StudentDashboard })));
+const StudentTest = lazy(() => import('./pages/StudentTest').then(module => ({ default: module.StudentTest })));
+const StudentResult = lazy(() => import('./pages/StudentResult').then(module => ({ default: module.StudentResult })));
+const AdminLogin = lazy(() => import('./pages/AdminLogin').then(module => ({ default: module.AdminLogin })));
+const AdminDashboard = lazy(() => import('./pages/AdminDashboard').then(module => ({ default: module.AdminDashboard })));
+const AdminStudentDetails = lazy(() => import('./pages/AdminStudentDetails').then(module => ({ default: module.AdminStudentDetails })));
 
 export const App: React.FC = () => {
   return (
     <BrowserRouter>
-      <Routes>
+      <Suspense fallback={<div className="min-h-screen bg-slate-50 flex items-center justify-center text-slate-600">Loading portal…</div>}>
+        <Routes>
         {/* Student Routes */}
         <Route path="/" element={<StudentRegistration />} />
         <Route path="/student/dashboard" element={<StudentDashboard />} />
@@ -31,7 +33,8 @@ export const App: React.FC = () => {
 
         {/* Catch-all Fallback */}
         <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+        </Routes>
+      </Suspense>
     </BrowserRouter>
   );
 };

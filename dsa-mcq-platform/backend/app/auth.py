@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 from typing import Optional, Any
 from jose import JWTError, jwt
-from fastapi import Depends, HTTPException, status, Query
+from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from passlib.hash import pbkdf2_sha256
 from sqlalchemy.orm import Session
@@ -95,7 +95,6 @@ def get_current_admin(
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         username: Optional[str] = payload.get("sub")
-        role: Optional[str] = payload.get("role")
         if not username:
             raise credentials_exception
 
@@ -125,16 +124,6 @@ def get_current_admin(
                 role=user.role,
                 department_id=user.department_id,
                 department_name=dept_name
-            )
-
-        if role in ("super_admin", "admin"):
-            return CurrentUser(
-                id=0,
-                username=username,
-                full_name="Super Administrator",
-                role="super_admin",
-                department_id=None,
-                department_name=None
             )
 
         raise credentials_exception
@@ -178,16 +167,9 @@ def get_optional_admin(
 
 def resolve_admin_user(
     header_admin: Optional[CurrentUser] = Depends(get_optional_admin),
-    token: Optional[str] = Query(None, alias="token"),
-    db: Session = Depends(get_db)
 ) -> CurrentUser:
     if header_admin:
         return header_admin
-    if token:
-        try:
-            return get_current_admin(token=token, db=db)
-        except Exception:
-            pass
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate admin credentials",

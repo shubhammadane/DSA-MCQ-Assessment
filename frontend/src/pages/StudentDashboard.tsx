@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   BookOpen,
@@ -23,12 +23,14 @@ export const StudentDashboard: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [startingExamId, setStartingExamId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [codeExamId, setCodeExamId] = useState<number | null>(null);
+  const [sessionCode, setSessionCode] = useState('');
 
-  const fetchDashboardData = async () => {
+  const fetchDashboardData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const studentToken = sessionStorage.getItem('student_token') || localStorage.getItem('student_token');
+      const studentToken = sessionStorage.getItem('student_token');
       if (!studentToken) {
         navigate('/');
         return;
@@ -45,7 +47,6 @@ export const StudentDashboard: React.FC = () => {
     } catch (err: any) {
       if (err.response?.status === 401) {
         sessionStorage.removeItem('student_token');
-        localStorage.removeItem('student_token');
         navigate('/');
       } else {
         setError(err.response?.data?.detail || 'Failed to load assigned examinations.');
@@ -53,19 +54,26 @@ export const StudentDashboard: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [navigate]);
 
   useEffect(() => {
-    fetchDashboardData();
-  }, []);
+    const task = window.setTimeout(() => void fetchDashboardData(), 0);
+    return () => window.clearTimeout(task);
+  }, [fetchDashboardData]);
 
   const handleStartExam = async (examId: number) => {
+    if (!sessionCode.trim()) {
+      setCodeExamId(examId);
+      return;
+    }
     setStartingExamId(examId);
     setError(null);
     try {
-      const res = await api.post(`/student/exams/${examId}/start`);
+      const res = await api.post(`/student/exams/${examId}/start`, { session_code: sessionCode.trim() });
       const { attempt_id } = res.data;
       sessionStorage.setItem('attempt_id', attempt_id.toString());
+      setCodeExamId(null);
+      setSessionCode('');
       navigate(`/test/${attempt_id}`);
     } catch (err: any) {
       const detail = err.response?.data?.detail || 'Failed to start exam.';
@@ -76,7 +84,6 @@ export const StudentDashboard: React.FC = () => {
 
   const handleLogout = () => {
     sessionStorage.removeItem('student_token');
-    localStorage.removeItem('student_token');
     sessionStorage.removeItem('student');
     sessionStorage.removeItem('attempt_id');
     navigate('/');
@@ -270,7 +277,7 @@ export const StudentDashboard: React.FC = () => {
                             <span className="text-xs text-slate-600 font-medium">Final Score</span>
                             <div className="text-right">
                               <span className="text-sm font-bold text-emerald-600">
-                                {exam.score} / {exam.total_questions}
+                                {exam.score} / {exam.total_marks}
                               </span>
                               <span className="text-[11px] text-slate-500 block">({exam.percentage}%)</span>
                             </div>
@@ -287,7 +294,10 @@ export const StudentDashboard: React.FC = () => {
                         </div>
                       ) : (
                         <button
-                          onClick={() => handleStartExam(exam.id)}
+                          onClick={() => {
+                            setSessionCode('');
+                            setCodeExamId(exam.id);
+                          }}
                           disabled={startingExamId === exam.id}
                           className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-sm flex items-center justify-center space-x-2 transition-all disabled:opacity-50 text-sm cursor-pointer"
                         >
@@ -309,25 +319,42 @@ export const StudentDashboard: React.FC = () => {
           )}
         </section>
 
-        {/* Existing General DSA MCQ Practice Card for Backward Compatibility */}
-        <section className="bg-white border border-slate-200 rounded-2xl p-6 flex flex-col md:flex-row items-center justify-between gap-4 shadow-xs">
-          <div className="space-y-1">
-            <h4 className="text-base font-bold text-slate-900 flex items-center space-x-2">
-              <span className="text-xs px-2 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 rounded font-semibold uppercase">Legacy Assessment</span>
-              <span>DSA 50-Question Practice Test</span>
-            </h4>
-            <p className="text-xs text-slate-500">
-              Take the standard Data Structures &amp; Algorithms 50-question general assessment test.
-            </p>
-          </div>
-          <button
-            onClick={() => navigate('/')}
-            className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 rounded-xl text-xs font-semibold whitespace-nowrap transition-colors cursor-pointer"
-          >
-            Launch Practice Test
-          </button>
-        </section>
       </main>
+
+      {codeExamId !== null && (
+        <div className="fixed inset-0 z-50 bg-slate-950/50 flex items-center justify-center p-4">
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              handleStartExam(codeExamId);
+            }}
+            className="w-full max-w-sm bg-white rounded-2xl border border-slate-200 shadow-2xl p-6 space-y-4"
+          >
+            <div>
+              <h3 className="text-lg font-bold text-slate-900">Enter exam session code</h3>
+              <p className="text-xs text-slate-500 mt-1">Use the one-time classroom code provided by the exam administrator.</p>
+            </div>
+            <input
+              autoFocus
+              required
+              minLength={6}
+              maxLength={32}
+              type="password"
+              inputMode="numeric"
+              value={sessionCode}
+              onChange={(event) => setSessionCode(event.target.value)}
+              className="w-full p-3 border border-slate-300 rounded-xl font-mono tracking-widest text-center text-lg"
+              placeholder="Session code"
+            />
+            <div className="flex gap-2">
+              <button type="button" onClick={() => { setCodeExamId(null); setSessionCode(''); }} className="flex-1 py-2.5 rounded-xl border border-slate-300 text-slate-700 font-semibold">Cancel</button>
+              <button type="submit" disabled={startingExamId === codeExamId} className="flex-1 py-2.5 rounded-xl bg-blue-600 text-white font-bold disabled:opacity-50">
+                {startingExamId === codeExamId ? 'Checking…' : 'Continue'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 };

@@ -20,8 +20,8 @@ const api = axios.create({
 });
 
 api.interceptors.request.use((config) => {
-  const adminToken = localStorage.getItem('admin_token');
-  const studentToken = sessionStorage.getItem('student_token') || localStorage.getItem('student_token');
+  const adminToken = sessionStorage.getItem('admin_token');
+  const studentToken = sessionStorage.getItem('student_token');
 
   // If request is directed to student endpoints and student token exists, use student token
   if (config.url?.includes('/student/') || config.url?.includes('/security-log')) {
