@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Literal
 from datetime import datetime
 
 
@@ -136,7 +136,7 @@ class StudentUpdate(BaseModel):
     program: Optional[str] = None
     year: Optional[str] = None
     semester: Optional[str] = None
-    password: Optional[str] = None
+    password: Optional[str] = Field(default=None, min_length=8, max_length=128)
     is_active: Optional[bool] = None
 
 class StudentOut(BaseModel):
@@ -208,20 +208,20 @@ class QuestionOut(BaseModel):
     options: Dict[str, str]
 
 class QuestionCreate(BaseModel):
-    question_text: str
-    option_a: str
-    option_b: str
-    option_c: str
-    option_d: str
-    correct_answer: str
+    question_text: str = Field(min_length=1, max_length=10000)
+    option_a: str = Field(min_length=1, max_length=5000)
+    option_b: str = Field(min_length=1, max_length=5000)
+    option_c: str = Field(min_length=1, max_length=5000)
+    option_d: str = Field(min_length=1, max_length=5000)
+    correct_answer: Literal["A", "B", "C", "D"]
     topic: Optional[str] = "General"
     department_id: Optional[int] = None
     program_id: Optional[int] = None
     academic_year_id: Optional[int] = None
     semester_id: Optional[int] = None
     subject_id: Optional[int] = None
-    difficulty: Optional[str] = "Medium"
-    marks: int = 1
+    difficulty: Optional[Literal["Easy", "Medium", "Hard"]] = "Medium"
+    marks: int = Field(default=1, ge=1, le=100)
     is_active: bool = True
 
 class QuestionUpdate(BaseModel):
@@ -238,7 +238,7 @@ class QuestionUpdate(BaseModel):
     semester_id: Optional[int] = None
     subject_id: Optional[int] = None
     difficulty: Optional[str] = None
-    marks: Optional[int] = None
+    marks: Optional[int] = Field(default=None, ge=1, le=100)
     is_active: Optional[bool] = None
 
 class QuestionStatusUpdate(BaseModel):
@@ -277,7 +277,7 @@ class AdminQuestionOut(BaseModel):
 # 6. Exam Schemas
 # ==========================================
 class ExamCreate(BaseModel):
-    title: str
+    title: str = Field(min_length=1, max_length=255)
     code: Optional[str] = None
     department_id: Optional[int] = None
     program_id: Optional[int] = None
@@ -288,14 +288,15 @@ class ExamCreate(BaseModel):
     start_time: Optional[str] = None
     end_date: Optional[str] = None
     end_time: Optional[str] = None
-    duration_minutes: int = 60
-    total_questions: int = 25
-    marks_per_question: int = 1
-    total_marks: Optional[int] = None
-    passing_percentage: float = 40.0
-    selection_mode: str = "random"  # 'random' or 'manual'
+    duration_minutes: int = Field(default=60, ge=1, le=1440)
+    total_questions: int = Field(default=25, ge=1, le=500)
+    marks_per_question: int = Field(default=1, ge=1, le=100)
+    total_marks: Optional[int] = Field(default=None, ge=1, le=50000)
+    passing_percentage: float = Field(default=40.0, ge=0, le=100)
+    selection_mode: Literal["random", "manual"] = "random"
     selected_question_ids: Optional[List[int]] = None
-    status: str = "draft"          # 'draft', 'published', 'closed'
+    status: Literal["draft", "published", "closed", "archived"] = "draft"
+    result_release_mode: Literal["immediate", "after_close"] = "after_close"
 
 class ExamUpdate(BaseModel):
     title: Optional[str] = None
@@ -309,14 +310,15 @@ class ExamUpdate(BaseModel):
     start_time: Optional[str] = None
     end_date: Optional[str] = None
     end_time: Optional[str] = None
-    duration_minutes: Optional[int] = None
-    total_questions: Optional[int] = None
-    marks_per_question: Optional[int] = None
-    total_marks: Optional[int] = None
-    passing_percentage: Optional[float] = None
-    selection_mode: Optional[str] = None
+    duration_minutes: Optional[int] = Field(default=None, ge=1, le=1440)
+    total_questions: Optional[int] = Field(default=None, ge=1, le=500)
+    marks_per_question: Optional[int] = Field(default=None, ge=1, le=100)
+    total_marks: Optional[int] = Field(default=None, ge=1, le=50000)
+    passing_percentage: Optional[float] = Field(default=None, ge=0, le=100)
+    selection_mode: Optional[Literal["random", "manual"]] = None
     selected_question_ids: Optional[List[int]] = None
-    status: Optional[str] = None
+    status: Optional[Literal["draft", "published", "closed", "archived"]] = None
+    result_release_mode: Optional[Literal["immediate", "after_close"]] = None
     is_active: Optional[bool] = None
 
 class ExamOut(BaseModel):
@@ -345,6 +347,9 @@ class ExamOut(BaseModel):
     selection_mode: str
     status: str
     is_active: bool
+    has_session_code: bool = False
+    session_code_rotated_at: Optional[datetime] = None
+    result_release_mode: str = "after_close"
     assigned_students_count: int = 0
     attempts_count: int = 0
     created_at: Optional[datetime] = None
@@ -389,17 +394,18 @@ class StudentAvailableExam(BaseModel):
     attempt_id: Optional[int] = None
     score: Optional[int] = None
     percentage: Optional[float] = None
+    requires_session_code: bool = True
 
 
 # ==========================================
 # 7. Answer & Attempt Schemas
 # ==========================================
 class SaveAnswerRequest(BaseModel):
-    question_number: int
-    selected_answer: Optional[str] = None
+    question_number: int = Field(ge=1, le=500)
+    selected_answer: Optional[Literal["A", "B", "C", "D"]] = None
 
 class BatchAnswersRequest(BaseModel):
-    answers: List[SaveAnswerRequest]
+    answers: List[SaveAnswerRequest] = Field(max_length=500)
 
 class StudentAnswerOut(BaseModel):
     question_number: int
@@ -414,8 +420,8 @@ class StudentAnswerOut(BaseModel):
         from_attributes = True
 
 class SecurityLogCreate(BaseModel):
-    event_type: str  # tab_switch, fullscreen_exit, copy_attempt, paste_attempt, context_menu
-    details: Optional[str] = None
+    event_type: Literal["tab_switch", "fullscreen_exit", "copy_attempt", "paste_attempt", "context_menu"]
+    details: Optional[str] = Field(default=None, max_length=500)
 
 class SecurityLogOut(BaseModel):
     id: int
@@ -463,6 +469,9 @@ class StartAttemptResponse(BaseModel):
     time_limit_minutes: int = 60
     total_questions: int = 50
 
+class StartExamRequest(BaseModel):
+    session_code: str = Field(min_length=6, max_length=32)
+
 class AttemptStatusResponse(BaseModel):
     attempt_id: int
     status: str
@@ -485,6 +494,9 @@ class TestResultOut(BaseModel):
     attempt: AttemptOut
     answers: List[StudentAnswerOut]
     security_logs: Optional[List[SecurityLogOut]] = []
+    review_available: bool = True
+    review_message: Optional[str] = None
+    maximum_score: int = 0
 
 
 # ==========================================

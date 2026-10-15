@@ -7,7 +7,7 @@ services:
     runtime: python
     rootDir: dsa-mcq-platform/backend
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    startCommand: alembic upgrade head && python seed_academic.py && uvicorn app.main:app --host 0.0.0.0 --port $PORT
     plan: free
     envVars:
       - key: DATABASE_URL
@@ -19,11 +19,15 @@ services:
       - key: ALGORITHM
         value: HS256
       - key: ACCESS_TOKEN_EXPIRE_MINUTES
-        value: "1440"
+        value: "120"
       - key: ADMIN_USERNAME
         value: admin
       - key: ADMIN_PASSWORD
-        value: admin123
+        generateValue: true
+      - key: ENVIRONMENT
+        value: production
+      - key: EXAM_TIMEZONE
+        value: Asia/Kolkata
       - key: FRONTEND_URL
         sync: false
 

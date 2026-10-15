@@ -400,16 +400,15 @@ def upgrade() -> None:
     if sem_inserts:
         op.bulk_insert(sem_table, sem_inserts)
 
-    # 18. Backfill existing students with active status and default secure password hash if missing
-    default_hash = "$pbkdf2-sha256$29000$FoKQ0rp3TskZ47xXCsGYcw$upi0daIbvwI5njqkMZxeh1JL7XaSFul9YnUz2rTxpdM"  # 'student123'
-    conn.execute(sa.text(f"""
+    # 18. Preserve missing passwords so administrators must issue an individual
+    # reset instead of assigning one shared credential to every student.
+    conn.execute(sa.text("""
         UPDATE students
-        SET password_hash = COALESCE(password_hash, '{default_hash}'),
-            is_active = COALESCE(is_active, TRUE),
+        SET is_active = COALESCE(is_active, TRUE),
             program = COALESCE(program, 'UG'),
             year = COALESCE(year, '1st Year'),
             semester = COALESCE(semester, 'Semester 1')
-        WHERE password_hash IS NULL OR is_active IS NULL;
+        WHERE is_active IS NULL OR program IS NULL OR year IS NULL OR semester IS NULL;
     """))
 
     # 19. Backfill existing questions with marks and difficulty

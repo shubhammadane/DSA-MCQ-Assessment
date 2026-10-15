@@ -123,6 +123,9 @@ export interface TestResult {
   attempt: Attempt;
   answers: StudentAnswer[];
   security_logs?: SecurityLog[];
+  review_available: boolean;
+  review_message?: string | null;
+  maximum_score: number;
 }
 
 export interface AdminStats {
@@ -215,6 +218,9 @@ export interface Exam {
   attempts_count: number;
   created_at?: string;
   updated_at?: string;
+  has_session_code: boolean;
+  session_code_rotated_at?: string | null;
+  result_release_mode: 'immediate' | 'after_close';
 }
 
 export interface StudentAvailableExam {
@@ -235,6 +241,7 @@ export interface StudentAvailableExam {
   attempt_id?: number | null;
   score?: number | null;
   percentage?: number | null;
+  requires_session_code: boolean;
 }
 
 export interface AssignedStudent {

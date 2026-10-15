@@ -8,8 +8,7 @@ import {
   ArrowRight,
   AlertCircle,
   ShieldCheck,
-  KeyRound,
-  Sparkles
+  KeyRound
 } from 'lucide-react';
 import api from '../services/api';
 import { CollegeBranding } from '../components/CollegeBranding';
@@ -49,7 +48,6 @@ export const StudentRegistration: React.FC = () => {
 
       const { access_token, student } = response.data;
       sessionStorage.setItem('student_token', access_token);
-      localStorage.setItem('student_token', access_token);
       sessionStorage.setItem('student', JSON.stringify(student));
 
       navigate('/student/dashboard');
@@ -126,18 +124,6 @@ export const StudentRegistration: React.FC = () => {
             <KeyRound className="w-3.5 h-3.5" />
             <span>Student Exam Login</span>
           </button>
-          <button
-            type="button"
-            onClick={() => setActiveMode('practice')}
-            className={`flex-1 py-2 text-xs font-bold rounded-xl transition-all flex items-center justify-center space-x-1.5 ${
-              activeMode === 'practice'
-                ? 'bg-blue-600 text-white shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>DSA Practice Test</span>
-          </button>
         </div>
 
         {/* TAB 1: SECURE STUDENT EXAM LOGIN */}
@@ -186,9 +172,7 @@ export const StudentRegistration: React.FC = () => {
                   className="w-full pl-10 pr-4 py-3 bg-white border border-slate-300 rounded-xl text-slate-900 font-medium placeholder-slate-500 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 transition-colors text-sm"
                 />
               </div>
-              <p className="text-[11px] text-slate-500 mt-1.5">
-                Default password for new enrollments: <span className="text-slate-700 font-mono font-medium">student123</span> or your Roll Number.
-              </p>
+              <p className="text-[11px] text-slate-500 mt-1.5">Use the temporary password issued by your administrator.</p>
             </div>
 
             <button

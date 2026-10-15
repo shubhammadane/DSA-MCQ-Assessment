@@ -20,7 +20,7 @@ export const AdminLogin: React.FC = () => {
     try {
       const response = await api.post('/auth/login', { username, password });
       const { access_token, user } = response.data;
-      localStorage.setItem('admin_token', access_token);
+      sessionStorage.setItem('admin_token', access_token);
       if (user) {
         localStorage.setItem('admin_user', JSON.stringify(user));
       }

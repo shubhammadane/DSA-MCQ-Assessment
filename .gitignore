@@ -5,4 +5,10 @@ __pycache__/
 node_modules/
 dist/
 .venv/
+.pytest_cache/
 backup_checkpoint/
+db_backups/
+db_backup_pre_*/
+dsa-mcq-platform/backend/db_backups/
+dsa-mcq-platform/backend/db_backup_pre_*/
+student_cleanup_investigation_report.json

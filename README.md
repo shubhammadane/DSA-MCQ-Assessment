@@ -1,134 +1,164 @@
-# DSA MCQ Assessment Web Application
+# College Examination & MCQ Assessment Platform
 
-A full-stack, college-grade **Data Structures & Algorithms MCQ Assessment Web Application** built with **React**, **TypeScript**, **Tailwind CSS**, **FastAPI**, **PostgreSQL**, and **SQLAlchemy**.
+A full-stack examination platform for department-scoped question banks, student assignments, timed MCQ examinations, audit logs and result management. The application uses React, TypeScript and Tailwind CSS on the frontend, with FastAPI, SQLAlchemy, Alembic and PostgreSQL on the backend.
 
-> [!IMPORTANT]
-> **Fixed Question Bank**: This application uses the exact, fixed 50 DSA MCQ questions extracted directly from `Data_Structures_50_MCQ_Questions.docx`. No questions are added, modified, or omitted.
+## Main capabilities
 
----
+- Role-based administration for super administrators and department HODs.
+- Department, program, academic-year, semester and subject management.
+- Student creation and secure bulk import from CSV, XLSX or text-based PDF roll lists.
+- Unique temporary passwords generated during bulk import and downloaded once as CSV.
+- Question-bank management with subject and department boundaries.
+- Reviewed question import from CSV, XLSX or text-based PDF files.
+- Random or manual question selection for each examination.
+- Student-specific exam assignment and one-attempt enforcement.
+- Server-side examination timers, scheduling and automatic timeout submission.
+- A new random session access code for every examination sitting. Generating a new code invalidates the old code.
+- Marks-based scoring, configurable passing percentage and delayed answer-review release.
+- Security-event logging for tab changes, fullscreen exits, copying and pasting.
+- Authenticated Excel and CSV result exports.
+- Safe archival and dependency-aware deletion of academic records.
 
-## 🚀 Key Features
+## Secure examination flow
 
-### 🎓 Student Assessment Portal
-1. **Student Registration Form**: Required fields: `Enrollment Number`, `Student Name`, `Department`.
-2. **Fixed 50-Question Test**:
-   - Single question display with exact 4 options (A, B, C, D) per question.
-   - Interactive 1-50 grid navigation panel with color-coded status badges:
-     - **Sky Blue**: Current question
-     - **Emerald Green**: Answered question
-     - **Slate Dark**: Unanswered question
-   - **Previous** / **Next** navigation with state preservation.
-   - Real-time incremental auto-saving to backend DB.
-   - **Submit Test** confirmation modal preventing accidental submissions.
-3. **Duplicate Attempt Protection**: Enforces exactly **one** completed attempt per Enrollment Number. If a student attempts to log in again, the application notifies: `"You have already completed this assessment."`
-4. **Immediate Results & Performance Analysis**:
-   - Displays Student Name, Enrollment Number, Department, Total Score (`Score / 50`), Correct Answers Count, Wrong Answers Count, and Percentage (`%`).
-   - Detailed 50-Question review with:
-     - **Green (`✓ CORRECT`)** badge for correct answers.
-     - **Red (`✗ WRONG`)** badge for incorrect answers.
-     - Highlights student's selected answer vs. authoritative correct answer.
-     <img width="1891" height="943" alt="Screenshot 2026-09-30 051804" src="https://github.com/user-attachments/assets/b027e717-4649-43e5-ace1-0bd2b53ef961" />
-     <img width="1894" height="929" alt="image" src="https://github.com/user-attachments/assets/8c555422-7d79-4011-9b27-59b17326f955" />
+1. An administrator creates students manually or imports a roll list.
+2. Temporary student credentials are distributed securely.
+3. The administrator creates an exam, assigns students and configures its schedule.
+4. Immediately before the sitting, the administrator selects **Create Code** or **New Code** for that exam.
+5. The generated eight-digit code is displayed once. Only its keyed hash is stored.
+6. A student signs in, opens an assigned exam and enters the current session code.
+7. The backend verifies the student, assignment, schedule, code and attempt ownership before serving questions.
 
----
+For a high-stakes examination, rotate the code shortly before the sitting and do not send it through a public group. The shared session code supplements the student's individual login; it does not replace it.
 
-### 🛡️ Admin Management Panel
-- **Secure Authentication**: JWT-based Admin Login (`/admin/login`).
-- **Dashboard Analytics**: Real-time stats for:
-  - Total Registered Students
-  - Total Test Attempts
-  - Total Completed Tests
-  - Class Average Score
-  - Class Average Percentage
-- **Student Search & Audit**:
-  - Filterable by Enrollment Number, Student Name, or Department.
-  - One-click detailed inspection of any student's complete 50-question submission (`/admin/student/{id}`).
-- **Excel/CSV Data Export**:
-  - **Summary Export**: Excel workbook containing Enrollment No, Name, Department, Score, Percentage, Correct/Wrong counts, and Submission Date.
-  - **Detailed Answer Export**: Excel workbook containing question-by-question student responses for all students.
-<img width="1894" height="925" alt="Std" src="https://github.com/user-attachments/assets/86a9ef0f-0b8e-4713-a015-34f9549f30ac" />
+## Import formats
 
-<img width="1909" height="935" alt="Addd" src="https://github.com/user-attachments/assets/e6d2f448-8f17-4693-887a-f4fa68a27df5" />
+### Student import
 
----
+CSV and XLSX files require these columns:
 
-## 📁 Project Directory Structure
-
-```
-dsa-mcq-platform/
-├── backend/
-│   ├── app/
-│   │   ├── api.py               # All FastAPI endpoints (Auth, Students, Attempts, Admin)
-│   │   ├── auth.py              # JWT Authentication middleware & password hashing
-│   │   ├── config.py            # Pydantic environment configurations
-│   │   ├── database.py          # SQLAlchemy PostgreSQL connection & engine (with SQLite fallback)
-│   │   ├── main.py              # FastAPI application entry point with CORS setup
-│   │   ├── models.py            # SQLAlchemy database tables (students, attempts, student_answers)
-│   │   ├── questions_data.py    # Seed loader for fixed 50 DSA questions
-│   │   └── schemas.py           # Pydantic validation schemas
-│   ├── .env                     # Backend environment variables
-│   └── requirements.txt         # Python dependencies
-├── frontend/
-│   ├── src/
-│   │   ├── pages/
-│   │   │   ├── AdminDashboard.tsx      # Admin dashboard & student search table
-│   │   │   ├── AdminLogin.tsx          # Protected admin login
-│   │   │   ├── AdminStudentDetails.tsx  # Admin question-wise student audit log
-│   │   │   ├── StudentRegistration.tsx # Student entry form
-│   │   │   ├── StudentResult.tsx       # Student test result & question review
-│   │   │   └── StudentTest.tsx         # 50-Question examination interface
-│   │   ├── services/
-│   │   │   └── api.ts                  # Axios API client with JWT bearer interceptor
-│   │   ├── App.tsx                     # React Router routes
-│   │   ├── index.css                   # Tailwind CSS styling
-│   │   └── types.ts                    # TypeScript interface definitions
-│   ├── tailwind.config.js              # Tailwind CSS configuration
-│   └── package.json
-├── dsa_questions.json           # Extracted 50 fixed questions JSON seed file
-├── README.md
-└── .env.example
+```text
+enrollment_no,name,gender
+BT26F05F001,Student Name,Male
 ```
 
----
+Text-based PDF roll lists are also supported when each record contains a recognizable enrollment number followed by the student's name and optional gender. Scanned PDFs can use OCR when Poppler (`pdftoppm`) and Tesseract are installed on the backend; OCR is limited to 15 pages per upload. Imports are limited to 5 MB, 5,000 rows and 100 PDF pages.
 
-## 🛠️ How to Run the Application
+Existing students are not modified unless the operator explicitly enables updating, and an HOD cannot move a student from another department. Newly generated temporary passwords appear only in the import response and are downloaded by the frontend.
 
-### 1. Database Prerequisites
-Ensure PostgreSQL server is running on `localhost:5432` and create the database:
-```sql
-CREATE DATABASE dsa_mcq_db;
+### Question import
+
+CSV and XLSX files require:
+
+```text
+question_text,option_a,option_b,option_c,option_d,correct_answer,marks,difficulty,topic
+What is a stack?,FIFO,LIFO,Tree,Graph,B,1,Easy,Data Structures
 ```
-*(Note: If PostgreSQL is offline, the backend automatically falls back to local SQLite `dsa_assessment.db` to guarantee smooth execution).*
 
----
+PDF question import recognizes common numbered question layouts, lettered or numbered choices, inline correct answers, and separate answer-key sections or tables. It works best when each question has four choices and the answer key clearly identifies the correct choice. For example:
 
-### 2. Running the Backend (FastAPI)
+```text
+1. What is a stack?
+A. FIFO structure
+B. LIFO structure
+C. Tree structure
+D. Graph structure
+Answer: B
+```
+
+The import screen always previews the parsed questions and errors before confirmation. PDF extraction is best effort because PDF layouts vary; scanned files require Poppler and Tesseract, and the assessment schema supports four choices (A-D). Check extracted wording and answers in the preview. The importer rejects missing fields, invalid answer keys, duplicate options, duplicate questions and questions already present in the selected subject. Imported questions are never published without administrator confirmation.
+
+## Project layout
+
+```text
+dsa-mcq-platform/backend/
+├── alembic/versions/       Database migrations
+├── app/api.py              API endpoints and authorization
+├── app/auth.py             JWT and password authentication
+├── app/config.py           Environment configuration
+├── app/database.py         SQLAlchemy engine and sessions
+├── app/importers.py        Bounded student and question parsers
+├── app/main.py             FastAPI application and initial seed
+├── app/models.py           Database models
+└── app/schemas.py          Request and response validation
+
+frontend/src/
+├── pages/                  Student and administrator screens
+├── services/api.ts         Authenticated API client
+├── App.tsx                 Lazy-loaded application routes
+└── types.ts                Shared TypeScript types
+```
+
+## Local setup
+
+### 1. Configure PostgreSQL
+
+Create a database and copy the example configuration:
+
+```bash
+createdb dsa_mcq_db
+cp .env.example dsa-mcq-platform/backend/.env
+```
+
+Set a strong, unique `SECRET_KEY` and `ADMIN_PASSWORD` in the backend `.env`. Do not reuse the example placeholder values. `EXAM_TIMEZONE` controls how exam date/time fields are interpreted and defaults to `Asia/Kolkata`.
+
+### 2. Start the backend
 
 ```bash
 cd dsa-mcq-platform/backend
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+alembic upgrade head
+python seed_academic.py
+uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
-- **Backend API**: `http://localhost:8000`
-- **Interactive Swagger Docs**: `http://localhost:8000/docs`
 
----
+API documentation is available at `http://127.0.0.1:8000/docs`.
 
-### 3. Running the Frontend (React + Vite)
+### 3. Start the frontend
 
 ```bash
-cd dsa-mcq-platform/frontend
+cd frontend
 npm install
-npm run dev
+VITE_API_URL=http://127.0.0.1:8000 npm run dev
 ```
-- **Frontend App**: `http://localhost:5173`
 
----
+Open `http://127.0.0.1:5173`. Administrator login is at `/admin/login`; credentials come exclusively from the configured environment variables.
 
-## 🔑 Admin Credentials
+## Environment variables
 
-| Parameter | Value |
+| Variable | Purpose |
 | --- | --- |
-| **Login Route** | `/admin/login` |
-| **Username** | `` |
-| **Password** | `` |
+| `DATABASE_URL` | PostgreSQL SQLAlchemy connection URL |
+| `SECRET_KEY` | Persistent random key used to sign JWTs and hash exam codes |
+| `ADMIN_USERNAME` | Environment super-administrator username |
+| `ADMIN_PASSWORD` | Strong environment super-administrator password |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | JWT lifetime; default is 120 minutes |
+| `FRONTEND_URL` | Comma-separated allowed frontend origins |
+| `EXAM_TIMEZONE` | Timezone used for exam schedules |
+| `ENVIRONMENT` | Set to `production` in production deployments |
+
+Production startup fails if `SECRET_KEY` or `ADMIN_PASSWORD` is missing. CORS accepts only configured and local development origins.
+
+## Testing and verification
+
+```bash
+cd frontend
+npm run lint
+npm run build
+
+cd ../dsa-mcq-platform/backend
+pip install -r requirements-dev.txt
+pytest
+python -m compileall app alembic/versions
+```
+
+Use an isolated database for any additional backend integration tests; never point destructive test workflows at production.
+
+## Data protection
+
+- Never commit `.env`, database files, exports, credential CSVs or backup JSON files.
+- Existing secrets exposed in an earlier repository version should be rotated.
+- Removing a backup from the current branch does not erase it from Git history; use an approved history-rewrite process before making a previously exposed repository public.
+- Question review defaults to release only after an exam closes, reducing answer-key sharing during an active sitting.

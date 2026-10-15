@@ -1,4 +1,6 @@
 import os
+import secrets
+from typing import Optional
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
@@ -13,12 +15,14 @@ class Settings(BaseSettings):
         f"postgresql+psycopg2://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_SERVER}:{POSTGRES_PORT}/{POSTGRES_DB}"
     )
     
-    SECRET_KEY: str = os.getenv("SECRET_KEY", "dsa_mcq_assessment_secret_jwt_key_2026_super_secure")
+    SECRET_KEY: str = os.getenv("SECRET_KEY") or secrets.token_urlsafe(48)
     ALGORITHM: str = os.getenv("ALGORITHM", "HS256")
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "120"))
     
     ADMIN_USERNAME: str = os.getenv("ADMIN_USERNAME", "admin")
-    ADMIN_PASSWORD: str = os.getenv("ADMIN_PASSWORD", "admin123")
+    ADMIN_PASSWORD: Optional[str] = os.getenv("ADMIN_PASSWORD")
+    ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")
+    EXAM_TIMEZONE: str = os.getenv("EXAM_TIMEZONE", "Asia/Kolkata")
     
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "")
 

@@ -155,6 +155,9 @@ class Exam(Base):
     passing_percentage = Column(Float, default=40.0, nullable=False)
     selection_mode = Column(String, default="random", nullable=False)  # 'random' | 'manual'
     status = Column(String, default="draft", nullable=False)          # 'draft' | 'published' | 'closed'
+    session_code_hash = Column(String, nullable=True)
+    session_code_rotated_at = Column(DateTime, nullable=True)
+    result_release_mode = Column(String, default="after_close", nullable=False)
     is_active = Column(Boolean, default=True, index=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -286,3 +289,12 @@ class AdminUser(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     department = relationship("Department")
+
+
+class LoginFailure(Base):
+    """Shared, expiring login throttling state across workers and restarts."""
+    __tablename__ = "login_failures"
+
+    id = Column(Integer, primary_key=True, index=True)
+    key_hash = Column(String(64), index=True, nullable=False)
+    attempted_at = Column(DateTime, default=datetime.utcnow, index=True, nullable=False)
