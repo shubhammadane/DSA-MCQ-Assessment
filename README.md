@@ -42,7 +42,7 @@ enrollment_no,name,gender
 BT26F05F001,Student Name,Male
 ```
 
-Text-based PDF roll lists are also supported when each record contains a recognizable enrollment number followed by the student's name and optional gender. Scanned image PDFs must be OCR-processed first. Imports are limited to 5 MB, 5,000 rows and 100 PDF pages.
+Text-based PDF roll lists are also supported when each record contains a recognizable enrollment number followed by the student's name and optional gender. Scanned PDFs can use OCR when Poppler (`pdftoppm`) and Tesseract are installed on the backend; OCR is limited to 15 pages per upload. Imports are limited to 5 MB, 5,000 rows and 100 PDF pages.
 
 Existing students are not modified unless the operator explicitly enables updating, and an HOD cannot move a student from another department. Newly generated temporary passwords appear only in the import response and are downloaded by the frontend.
 
@@ -55,7 +55,7 @@ question_text,option_a,option_b,option_c,option_d,correct_answer,marks,difficult
 What is a stack?,FIFO,LIFO,Tree,Graph,B,1,Easy,Data Structures
 ```
 
-For PDF import, use this layout:
+PDF question import recognizes common numbered question layouts, lettered or numbered choices, inline correct answers, and separate answer-key sections or tables. It works best when each question has four choices and the answer key clearly identifies the correct choice. For example:
 
 ```text
 1. What is a stack?
@@ -66,7 +66,7 @@ D. Graph structure
 Answer: B
 ```
 
-The import screen always previews the parsed questions and errors before confirmation. It rejects missing fields, invalid answer keys, duplicate options, duplicate questions and questions already present in the selected subject. Imported questions are never published without administrator confirmation.
+The import screen always previews the parsed questions and errors before confirmation. PDF extraction is best effort because PDF layouts vary; scanned files require Poppler and Tesseract, and the assessment schema supports four choices (A-D). Check extracted wording and answers in the preview. The importer rejects missing fields, invalid answer keys, duplicate options, duplicate questions and questions already present in the selected subject. Imported questions are never published without administrator confirmation.
 
 ## Project layout
 

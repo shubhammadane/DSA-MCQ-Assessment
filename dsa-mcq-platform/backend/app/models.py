@@ -289,3 +289,12 @@ class AdminUser(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     department = relationship("Department")
+
+
+class LoginFailure(Base):
+    """Shared, expiring login throttling state across workers and restarts."""
+    __tablename__ = "login_failures"
+
+    id = Column(Integer, primary_key=True, index=True)
+    key_hash = Column(String(64), index=True, nullable=False)
+    attempted_at = Column(DateTime, default=datetime.utcnow, index=True, nullable=False)

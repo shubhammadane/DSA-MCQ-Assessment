@@ -16,7 +16,6 @@ import json
 import hashlib
 import hmac
 import secrets
-import time
 
 logger = logging.getLogger("uvicorn")
 
@@ -36,13 +35,12 @@ from app.auth import (
     resolve_admin_user
 )
 from app.questions_data import FIXED_QUESTIONS, QUESTIONS_BY_ID
-from app.importers import ImportValidationError, parse_question_file, parse_student_file
+from app.importers import ImportValidationError, parse_question_file, parse_student_file, read_limited_upload
 
 router = APIRouter(prefix="/api")
 
 _LOGIN_WINDOW_SECONDS = 15 * 60
 _LOGIN_MAX_FAILURES = 8
-_login_failures: Dict[str, List[float]] = {}
 
 
 # =========================================================================
@@ -133,20 +131,33 @@ def _owned_attempt(attempt_id: int, student: models.Student, db: Session) -> mod
     return attempt
 
 
-def _check_login_limit(key: str) -> None:
-    cutoff = time.monotonic() - _LOGIN_WINDOW_SECONDS
-    recent = [stamp for stamp in _login_failures.get(key, []) if stamp >= cutoff]
-    _login_failures[key] = recent
-    if len(recent) >= _LOGIN_MAX_FAILURES:
+def _login_key_hash(key: str) -> str:
+    return hmac.new(settings.SECRET_KEY.encode(), key.encode(), hashlib.sha256).hexdigest()
+
+
+def _check_login_limit(db: Session, key: str) -> None:
+    cutoff = datetime.utcnow() - timedelta(seconds=_LOGIN_WINDOW_SECONDS)
+    fingerprint = _login_key_hash(key)
+    recent = db.query(models.LoginFailure).filter(
+        models.LoginFailure.key_hash == fingerprint,
+        models.LoginFailure.attempted_at >= cutoff,
+    ).count()
+    if recent >= _LOGIN_MAX_FAILURES:
         raise HTTPException(status_code=429, detail="Too many failed login attempts. Try again later.")
 
 
-def _record_login_failure(key: str) -> None:
-    _login_failures.setdefault(key, []).append(time.monotonic())
+def _record_login_failure(db: Session, key: str) -> None:
+    db.add(models.LoginFailure(key_hash=_login_key_hash(key), attempted_at=datetime.utcnow()))
+    # Opportunistic retention keeps the shared limiter table bounded.
+    if secrets.randbelow(64) == 0:
+        cutoff = datetime.utcnow() - timedelta(seconds=_LOGIN_WINDOW_SECONDS)
+        db.query(models.LoginFailure).filter(models.LoginFailure.attempted_at < cutoff).delete(synchronize_session=False)
+    db.commit()
 
 
-def _clear_login_failures(key: str) -> None:
-    _login_failures.pop(key, None)
+def _clear_login_failures(db: Session, key: str) -> None:
+    db.query(models.LoginFailure).filter(models.LoginFailure.key_hash == _login_key_hash(key)).delete(synchronize_session=False)
+    db.commit()
 
 
 # =========================================================================
@@ -156,14 +167,14 @@ def _clear_login_failures(key: str) -> None:
 @router.post("/auth/login", response_model=schemas.Token)
 def login(credentials: schemas.AdminLogin, request: Request, db: Session = Depends(get_db)):
     rate_key = f"admin:{request.client.host if request.client else 'unknown'}:{credentials.username.strip().lower()}"
-    _check_login_limit(rate_key)
+    _check_login_limit(db, rate_key)
     # 1. Super Admin from environment configuration
     if (
         settings.ADMIN_PASSWORD
         and credentials.username == settings.ADMIN_USERNAME
         and secrets.compare_digest(credentials.password, settings.ADMIN_PASSWORD)
     ):
-        _clear_login_failures(rate_key)
+        _clear_login_failures(db, rate_key)
         access_token = create_access_token(data={"sub": credentials.username, "role": "super_admin"})
         user_out = schemas.AdminUserOut(
             id=0,
@@ -185,7 +196,7 @@ def login(credentials: schemas.AdminLogin, request: Request, db: Session = Depen
     ).first()
 
     if user and verify_password(credentials.password, user.hashed_password):
-        _clear_login_failures(rate_key)
+        _clear_login_failures(db, rate_key)
         access_token = create_access_token(data={
             "sub": user.username,
             "role": user.role,
@@ -206,7 +217,7 @@ def login(credentials: schemas.AdminLogin, request: Request, db: Session = Depen
         )
         return {"access_token": access_token, "token_type": "bearer", "user": user_out}
 
-    _record_login_failure(rate_key)
+    _record_login_failure(db, rate_key)
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Incorrect username or password"
@@ -382,7 +393,8 @@ def delete_admin_user(
         return {"status": "success", "message": f"User '{uname}' permanently deleted successfully.", "user_id": user_id, "permanent": True}
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error while deleting admin user: {str(e)}")
+        logger.exception("Failed to delete admin user")
+        raise HTTPException(status_code=500, detail="The admin user could not be deleted.")
 
 
 @router.post("/admin/users/bulk-delete", response_model=schemas.BulkDeleteResponse)
@@ -417,7 +429,8 @@ def bulk_delete_admin_users(
         )
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to bulk delete admin users: {str(e)}")
+        logger.exception("Failed to bulk delete admin users")
+        raise HTTPException(status_code=500, detail="The admin users could not be deleted.")
 
 
 # =========================================================================
@@ -567,7 +580,8 @@ def delete_department(
         return {"status": "success", "message": f"Department '{dept_name}' permanently deleted successfully.", "id": department_id}
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error while deleting department: {str(e)}")
+        logger.exception("Failed to delete department")
+        raise HTTPException(status_code=500, detail="The department could not be deleted.")
 
 
 @router.post("/departments/bulk-delete", response_model=schemas.BulkDeleteResponse)
@@ -612,7 +626,8 @@ def bulk_delete_departments(
         )
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error during bulk department deletion: {str(e)}")
+        logger.exception("Failed to bulk delete departments")
+        raise HTTPException(status_code=500, detail="The departments could not be deleted.")
 
 
 @router.delete("/academic/programs/{program_id}")
@@ -643,7 +658,8 @@ def delete_academic_program(
         return {"status": "success", "message": f"Academic program '{p_name}' permanently deleted.", "id": program_id}
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error deleting program: {str(e)}")
+        logger.exception("Failed to delete program")
+        raise HTTPException(status_code=500, detail="The program could not be deleted.")
 
 
 @router.delete("/academic/years/{year_id}")
@@ -674,7 +690,8 @@ def delete_academic_year(
         return {"status": "success", "message": f"Academic year '{y_name}' permanently deleted.", "id": year_id}
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error deleting academic year: {str(e)}")
+        logger.exception("Failed to delete academic year")
+        raise HTTPException(status_code=500, detail="The academic year could not be deleted.")
 
 
 @router.delete("/academic/semesters/{semester_id}")
@@ -705,7 +722,8 @@ def delete_academic_semester(
         return {"status": "success", "message": f"Semester '{s_name}' permanently deleted.", "id": semester_id}
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error deleting semester: {str(e)}")
+        logger.exception("Failed to delete semester")
+        raise HTTPException(status_code=500, detail="The semester could not be deleted.")
 
 
 @router.get("/departments/stats", response_model=List[schemas.DepartmentStats])
@@ -1027,7 +1045,7 @@ def delete_subject(subject_id: int, admin: CurrentUser = Depends(require_hod_or_
         db.rollback()
         raise HTTPException(
             status_code=500,
-            detail=f"Database error occurred while deleting subject '{subj.name}': {str(e)}"
+            detail="The subject could not be deleted."
         )
 
 
@@ -1085,7 +1103,8 @@ def bulk_delete_subjects(
         )
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error during bulk subject deletion: {str(e)}")
+        logger.exception("Failed to bulk delete subjects")
+        raise HTTPException(status_code=500, detail="The subjects could not be deleted.")
 
 
 
@@ -1348,10 +1367,11 @@ def admin_delete_student(
         raise
     except Exception as e:
         db.rollback()
-        log_deletion_audit(admin.username, "SINGLE_DELETE", "Student", [student_id], "FAILED", str(e))
+        logger.exception("Failed to delete student id=%s", student_id)
+        log_deletion_audit(admin.username, "SINGLE_DELETE", "Student", [student_id], "FAILED", "Operation failed; details are in server logs.")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to safely delete student: {str(e)}"
+            detail="The student could not be deleted."
         )
 
 
@@ -1435,10 +1455,11 @@ def admin_bulk_delete_students(
         raise
     except Exception as e:
         db.rollback()
-        log_deletion_audit(admin.username, "BULK_DELETE", "Student", student_ids, "FAILED", str(e))
+        logger.exception("Failed to bulk delete student ids=%s", student_ids)
+        log_deletion_audit(admin.username, "BULK_DELETE", "Student", student_ids, "FAILED", "Operation failed; details are in server logs.")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to safely delete selected students: {str(e)}"
+            detail="The selected students could not be deleted."
         )
 
 
@@ -1465,8 +1486,8 @@ async def bulk_import_students(
     if not dept:
         raise HTTPException(status_code=400, detail="Selected department does not exist or is inactive.")
 
-    contents = await file.read()
     try:
+        contents = await read_limited_upload(file)
         parsed_records = parse_student_file(contents, file.filename or "", file.content_type)
     except (ImportValidationError, UnicodeDecodeError) as parse_err:
         raise HTTPException(status_code=400, detail=str(parse_err)) from parse_err
@@ -1569,24 +1590,24 @@ def student_login(credentials: schemas.StudentLogin, request: Request, db: Sessi
         raise HTTPException(status_code=400, detail="Enrollment number and password are required.")
 
     rate_key = f"student:{request.client.host if request.client else 'unknown'}:{enrollment.lower()}"
-    _check_login_limit(rate_key)
+    _check_login_limit(db, rate_key)
 
     student = db.query(models.Student).filter(models.Student.enrollment_no == enrollment).first()
     if not student:
-        _record_login_failure(rate_key)
+        _record_login_failure(db, rate_key)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Enrollment Number or Password.")
 
     if not student.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Student account has been deactivated. Please contact admin.")
 
     if not student.password_hash:
-        _record_login_failure(rate_key)
+        _record_login_failure(db, rate_key)
         raise HTTPException(status_code=401, detail="No password is configured. Contact the administrator for a reset.")
     if not verify_password(plain_pwd, student.password_hash):
-        _record_login_failure(rate_key)
+        _record_login_failure(db, rate_key)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Enrollment Number or Password.")
 
-    _clear_login_failures(rate_key)
+    _clear_login_failures(db, rate_key)
 
     access_token = create_access_token(data={"sub": str(student.id), "enrollment_no": student.enrollment_no, "role": "student"})
     return {
@@ -2297,7 +2318,8 @@ def delete_exam(
         return {"message": f"Exam '{ex_title}' deleted successfully.", "deleted_id": exam_id}
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error deleting examination: {str(e)}")
+        logger.exception("Failed to delete examination")
+        raise HTTPException(status_code=500, detail="The examination could not be deleted.")
 
 
 @router.post("/admin/exams/bulk-delete", response_model=schemas.BulkDeleteResponse)
@@ -2345,7 +2367,8 @@ def bulk_delete_exams(
         )
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error during bulk exam deletion: {str(e)}")
+        logger.exception("Failed to bulk delete examinations")
+        raise HTTPException(status_code=500, detail="The examinations could not be deleted.")
 
 
 @router.post("/admin/exams/{exam_id}/archive")
@@ -2419,11 +2442,11 @@ def student_start_exam(
     if not exam.session_code_hash:
         raise HTTPException(status_code=400, detail="This exam does not have an active session code. Contact the exam administrator.")
     code_rate_key = f"exam-code:{current_student.id}:{exam.id}"
-    _check_login_limit(code_rate_key)
+    _check_login_limit(db, code_rate_key)
     if not _verify_session_code(exam, start_in.session_code):
-        _record_login_failure(code_rate_key)
+        _record_login_failure(db, code_rate_key)
         raise HTTPException(status_code=403, detail="Invalid exam session code.")
-    _clear_login_failures(code_rate_key)
+    _clear_login_failures(db, code_rate_key)
 
     # BACKEND AUTHORIZATION CHECK: Is student assigned?
     assignment = db.query(models.ExamStudent).filter(
@@ -3110,8 +3133,9 @@ def delete_assessment_attempt(
         }
     except Exception as e:
         db.rollback()
-        log_deletion_audit(admin.username, "SINGLE_DELETE", "Attempt", [attempt_id], "FAILED", str(e))
-        raise HTTPException(status_code=500, detail=f"Failed to delete assessment attempt: {str(e)}")
+        logger.exception("Failed to delete attempt id=%s", attempt_id)
+        log_deletion_audit(admin.username, "SINGLE_DELETE", "Attempt", [attempt_id], "FAILED", "Operation failed; details are in server logs.")
+        raise HTTPException(status_code=500, detail="The assessment attempt could not be deleted.")
 
 
 @router.post("/admin/attempts/bulk-delete", response_model=schemas.BulkDeleteResponse)
@@ -3153,8 +3177,9 @@ def bulk_delete_attempts(
         )
     except Exception as e:
         db.rollback()
-        log_deletion_audit(admin.username, "BULK_DELETE", "Attempt", attempt_ids, "FAILED", str(e))
-        raise HTTPException(status_code=500, detail=f"Failed to delete assessment attempts: {str(e)}")
+        logger.exception("Failed to bulk delete attempt ids=%s", attempt_ids)
+        log_deletion_audit(admin.username, "BULK_DELETE", "Attempt", attempt_ids, "FAILED", "Operation failed; details are in server logs.")
+        raise HTTPException(status_code=500, detail="The assessment attempts could not be deleted.")
 
 
 # =========================================================================
@@ -3227,8 +3252,8 @@ async def bulk_import_questions(
     if admin.is_hod and subject.department_id != admin.department_id:
         raise HTTPException(status_code=403, detail="You cannot import questions into another department.")
 
-    contents = await file.read()
     try:
+        contents = await read_limited_upload(file)
         questions, errors = parse_question_file(contents, file.filename or "", file.content_type)
     except (ImportValidationError, UnicodeDecodeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -3257,7 +3282,7 @@ async def bulk_import_questions(
         "errors": errors[:200],
         "questions": unique_questions[:100],
         "can_commit": bool(unique_questions) and not errors,
-        "format_help": "PDFs must contain numbered questions, A-D options, and an 'Answer: A' line.",
+        "format_help": "PDF import uses best-effort text extraction and OCR when available. It supports common numbered MCQ layouts, A-D or 1-4 choice labels, and inline or separate answer keys. Review every parsed question before confirming.",
     }
     if preview_only:
         return response
@@ -3588,8 +3613,9 @@ def delete_question(question_id: int, admin: CurrentUser = Depends(get_current_a
         return {"message": f"Question #{question_id} deleted permanently.", "id": question_id}
     except Exception as e:
         db.rollback()
-        log_deletion_audit(admin.username, "SINGLE_DELETE", "Question", [question_id], "FAILED", str(e))
-        raise HTTPException(status_code=500, detail=f"Failed to delete question: {str(e)}")
+        logger.exception("Failed to delete question id=%s", question_id)
+        log_deletion_audit(admin.username, "SINGLE_DELETE", "Question", [question_id], "FAILED", "Operation failed; details are in server logs.")
+        raise HTTPException(status_code=500, detail="The question could not be deleted.")
 
 
 @router.post("/admin/questions/bulk-delete", response_model=schemas.BulkDeleteResponse)
@@ -3641,8 +3667,9 @@ def bulk_delete_questions(
         )
     except Exception as e:
         db.rollback()
-        log_deletion_audit(admin.username, "BULK_DELETE", "Question", q_ids, "FAILED", str(e))
-        raise HTTPException(status_code=500, detail=f"Failed to delete questions: {str(e)}")
+        logger.exception("Failed to bulk delete question ids=%s", q_ids)
+        log_deletion_audit(admin.username, "BULK_DELETE", "Question", q_ids, "FAILED", "Operation failed; details are in server logs.")
+        raise HTTPException(status_code=500, detail="The questions could not be deleted.")
 
 
 # =========================================================================
@@ -3702,7 +3729,9 @@ def get_student_export_dataset(
     query = db.query(models.Student)
 
     # 1. HOD Department isolation
-    if admin.is_hod and admin.department_id:
+    if admin.is_hod and not admin.department_id:
+        raise HTTPException(status_code=403, detail="Your account is not assigned to a department.")
+    if admin.is_hod:
         query = query.filter(
             or_(
                 models.Student.department_id == admin.department_id,
@@ -3803,6 +3832,13 @@ def get_student_export_dataset(
     return headers, rows
 
 
+def _spreadsheet_safe_value(value):
+    """Keep untrusted text inert when CSV/XLSX files are opened in spreadsheet apps."""
+    if isinstance(value, str) and value.lstrip(" \t\r\n").startswith(("=", "+", "-", "@")):
+        return "'" + value
+    return value
+
+
 def generate_excel_stream(headers, rows, sheet_title="Student Data"):
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -3818,7 +3854,7 @@ def generate_excel_stream(headers, rows, sheet_title="Student Data"):
         bottom=Side(style='thin', color='CBD5E1')
     )
 
-    ws.append(headers)
+    ws.append([_spreadsheet_safe_value(value) for value in headers])
     for col_num in range(1, len(headers) + 1):
         cell = ws.cell(row=1, column=col_num)
         cell.font = header_font
@@ -3828,7 +3864,7 @@ def generate_excel_stream(headers, rows, sheet_title="Student Data"):
     ws.row_dimensions[1].height = 26
 
     for r_idx, row in enumerate(rows, start=2):
-        ws.append(row)
+        ws.append([_spreadsheet_safe_value(value) for value in row])
         for c_idx in range(1, len(row) + 1):
             cell = ws.cell(row=r_idx, column=c_idx)
             cell.border = thin_border
@@ -3842,6 +3878,10 @@ def generate_excel_stream(headers, rows, sheet_title="Student Data"):
         col_letter = openpyxl.utils.get_column_letter(col[0].column)
         ws.column_dimensions[col_letter].width = max(max_len + 4, 14)
 
+    for row in ws.iter_rows():
+        for cell in row:
+            cell.value = _spreadsheet_safe_value(cell.value)
+
     output = io.BytesIO()
     wb.save(output)
     output.seek(0)
@@ -3851,9 +3891,9 @@ def generate_excel_stream(headers, rows, sheet_title="Student Data"):
 def generate_csv_stream(headers, rows):
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(headers)
+    writer.writerow([_spreadsheet_safe_value(value) for value in headers])
     for row in rows:
-        writer.writerow(row)
+        writer.writerow([_spreadsheet_safe_value(value) for value in row])
     output.seek(0)
     return io.BytesIO(output.getvalue().encode("utf-8-sig"))
 
@@ -3897,7 +3937,9 @@ def export_students_excel(
     db: Session = Depends(get_db)
 ):
     query = db.query(models.Student)
-    if admin.is_hod and admin.department_id:
+    if admin.is_hod and not admin.department_id:
+        raise HTTPException(status_code=403, detail="Your account is not assigned to a department.")
+    if admin.is_hod:
         query = query.filter(models.Student.department_id == admin.department_id)
     students = query.order_by(models.Student.enrollment_no.asc()).all()
 
@@ -3940,6 +3982,10 @@ def export_students_excel(
                     att.paste_count or 0
                 ])
 
+    for row in ws.iter_rows():
+        for cell in row:
+            cell.value = _spreadsheet_safe_value(cell.value)
+
     output = io.BytesIO()
     wb.save(output)
     output.seek(0)
@@ -3959,35 +4005,37 @@ def export_students_csv(
     db: Session = Depends(get_db)
 ):
     query = db.query(models.Student)
-    if admin.is_hod and admin.department_id:
+    if admin.is_hod and not admin.department_id:
+        raise HTTPException(status_code=403, detail="Your account is not assigned to a department.")
+    if admin.is_hod:
         query = query.filter(models.Student.department_id == admin.department_id)
     students = query.order_by(models.Student.enrollment_no.asc()).all()
 
     output = io.StringIO()
     writer = csv.writer(output)
 
-    writer.writerow([
+    writer.writerow([_spreadsheet_safe_value(value) for value in [
         "Student ID", "Enrollment No", "Student Name", "Department", "Gender",
         "Program", "Year", "Semester", "Exam Title", "Subject",
         "Score", "Percentage", "Status", "Attempt Date",
         "Tab Switches", "Fullscreen Exits", "Copy Attempts", "Paste Attempts"
-    ])
+    ]])
 
     for s in students:
         attempts = db.query(models.Attempt).filter(models.Attempt.student_id == s.id).order_by(models.Attempt.started_at.desc()).all()
         if not attempts:
             if type == "summary":
                 continue
-            writer.writerow([
+            writer.writerow([_spreadsheet_safe_value(value) for value in [
                 s.id, s.enrollment_no, s.name, s.department, s.gender or "",
                 s.program or "", s.year or "", s.semester or "", "N/A", "N/A",
                 "N/A", "N/A", "Unattempted", "N/A",
                 0, 0, 0, 0
-            ])
+            ]])
         else:
             for att in attempts:
                 att_date = att.completed_at or att.submitted_at or att.started_at
-                writer.writerow([
+                writer.writerow([_spreadsheet_safe_value(value) for value in [
                     s.id, s.enrollment_no, s.name, s.department, s.gender or "",
                     s.program or "", s.year or "", s.semester or "",
                     att.exam_title_snapshot or "General Assessment",
@@ -3998,7 +4046,7 @@ def export_students_csv(
                     att.fullscreen_exit_count or 0,
                     att.copy_count or 0,
                     att.paste_count or 0
-                ])
+                ]])
 
     output.seek(0)
     filename = f"college_assessment_records_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
@@ -4168,5 +4216,6 @@ def verify_system_backup(
             "created_at": meta.get("created_at")
         }
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Backup verification failed: {str(e)}")
+        logger.exception("Backup verification failed")
+        raise HTTPException(status_code=400, detail="The backup file is invalid or could not be verified.")
 

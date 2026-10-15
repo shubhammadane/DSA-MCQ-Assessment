@@ -848,7 +848,15 @@ export const AdminDashboard: React.FC = () => {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
       if (res.data.credentials?.length) {
-        const rows = ['Enrollment No,Temporary Password', ...res.data.credentials.map((item: any) => `${item.enrollment_no},${item.temporary_password}`)];
+        const csvCell = (value: unknown) => {
+          const text = String(value ?? '');
+          const safe = /^[\s]*[=+\-@\t\r]/.test(text) ? `'${text}` : text;
+          return `"${safe.replaceAll('"', '""')}"`;
+        };
+        const rows = [
+          ['Enrollment No', 'Temporary Password'].map(csvCell).join(','),
+          ...res.data.credentials.map((item: any) => [item.enrollment_no, item.temporary_password].map(csvCell).join(','))
+        ];
         const blob = new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8' });
         const link = document.createElement('a');
         link.href = URL.createObjectURL(blob);
@@ -5024,7 +5032,7 @@ export const AdminDashboard: React.FC = () => {
             <div className="flex items-center justify-between">
               <div>
                 <h3 className="font-bold text-slate-900">Import reviewed MCQ questions</h3>
-                <p className="text-xs text-slate-500 mt-1">Upload CSV/XLSX columns for question_text, option_a–d and correct_answer, or a text PDF using numbered questions, A–D options and “Answer: A”.</p>
+                <p className="text-xs text-slate-500 mt-1">PDF import recognizes common question layouts, A–D or 1–4 choices, inline answers and separate answer keys. Scanned PDFs need OCR installed on the backend. Review the preview carefully before confirming.</p>
               </div>
               <button onClick={() => setShowQuestionImportModal(false)} className="p-2 text-slate-500"><X className="w-5 h-5" /></button>
             </div>

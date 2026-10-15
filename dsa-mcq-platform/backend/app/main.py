@@ -9,6 +9,7 @@ from app.questions_data import FIXED_QUESTIONS
 from app.config import settings
 from datetime import datetime
 from sqlalchemy import func
+from sqlalchemy.engine import make_url
 
 logger = logging.getLogger("uvicorn")
 
@@ -16,6 +17,10 @@ if settings.ENVIRONMENT.lower() == "production" and not os.getenv("SECRET_KEY"):
     raise RuntimeError("SECRET_KEY must be explicitly configured in production.")
 if settings.ENVIRONMENT.lower() == "production" and not settings.ADMIN_PASSWORD:
     raise RuntimeError("ADMIN_PASSWORD must be explicitly configured in production.")
+if settings.ENVIRONMENT.lower() == "production" and not os.getenv("DATABASE_URL"):
+    raise RuntimeError("DATABASE_URL must be explicitly configured in production.")
+if settings.ENVIRONMENT.lower() == "production" and make_url(settings.sqlalchemy_database_url).password == "postgres":
+    raise RuntimeError("The default PostgreSQL password is not allowed in production.")
 
 # Production schema changes are owned by Alembic. Local/test environments keep
 # create_all as a convenient bootstrap for isolated disposable databases.

@@ -2,7 +2,7 @@ from io import BytesIO
 
 import openpyxl
 
-from app.importers import ImportValidationError, parse_question_file, parse_student_file
+from app.importers import MAX_UPLOAD_BYTES, ImportValidationError, parse_question_file, parse_student_file, read_limited_upload
 
 
 def _text_pdf(lines: list[str]) -> bytes:
@@ -82,3 +82,22 @@ def test_legacy_xls_is_rejected_with_actionable_message():
         assert "Save the workbook as .xlsx" in str(exc)
     else:
         raise AssertionError("Legacy XLS should be rejected")
+
+
+def test_upload_reader_stops_at_limit_plus_one_byte():
+    class FakeUpload:
+        requested_size = None
+
+        async def read(self, size):
+            self.requested_size = size
+            return b"x" * size
+
+    upload = FakeUpload()
+    try:
+        import asyncio
+        asyncio.run(read_limited_upload(upload))
+    except ImportValidationError as exc:
+        assert "5 MB" in str(exc)
+    else:
+        raise AssertionError("Oversized upload should be rejected")
+    assert upload.requested_size == MAX_UPLOAD_BYTES + 1
