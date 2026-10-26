@@ -13,6 +13,8 @@ import {
 import api from '../services/api';
 import { CollegeBranding } from '../components/CollegeBranding';
 import type { Question, AttemptStatus } from '../types';
+import { AnswerQueue } from '../services/answerQueue';
+import type { SaveState } from '../services/answerQueue';
 
 export const StudentTest: React.FC = () => {
   const { attemptId } = useParams<{ attemptId: string }>();
@@ -24,6 +26,13 @@ export const StudentTest: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [saveState, setSaveState] = useState<SaveState>('saved');
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const queueRef = useRef<AnswerQueue | null>(null);
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const answersRef = useRef<{ [questionNumber: number]: string }>({});
+  const deadlineRef = useRef<number | null>(null);
+  const draftKey = `exam-draft-${attemptId}`;
   const [studentInfo] = useState<{ name: string; enrollment_no: string; department: string } | null>(() => {
     const cachedStudent = sessionStorage.getItem('student');
     return cachedStudent ? JSON.parse(cachedStudent) : null;
@@ -43,6 +52,23 @@ export const StudentTest: React.FC = () => {
   const [isTimedOut, setIsTimedOut] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isAutoSubmittingRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    const queue = new AnswerQueue(
+      batch => api.post(`/attempts/${attemptId}/answers`, { answers: batch }),
+      setSaveState,
+    );
+    queueRef.current = queue;
+    const retry = setInterval(() => { void queue.flush().catch(() => {}); }, 5000 + Math.random() * 1000);
+    const retryOnReconnect = () => { void queue.flush().catch(() => {}); };
+    window.addEventListener('online', retryOnReconnect);
+    return () => {
+      clearInterval(retry);
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      window.removeEventListener('online', retryOnReconnect);
+      queueRef.current = null;
+    };
+  }, [attemptId]);
 
   // Record security event to backend
   const logSecurityEvent = useCallback(async (eventType: string, details?: string) => {
@@ -64,20 +90,21 @@ export const StudentTest: React.FC = () => {
     setSubmitting(true);
 
     try {
-      const payloadAnswers = Object.entries(answers).map(([qNum, sel]) => ({
+      await queueRef.current?.flush().catch(() => {});
+      const payloadAnswers = Object.entries(answersRef.current).map(([qNum, sel]) => ({
         question_number: parseInt(qNum, 10),
         selected_answer: sel,
       }));
-      if (payloadAnswers.length > 0) {
-        await api.post(`/attempts/${attemptId}/answers`, { answers: payloadAnswers }).catch(() => {});
-      }
-      await api.post(`/attempts/${attemptId}/submit`).catch(() => {});
+      await api.post(`/attempts/${attemptId}/submit`, { answers: payloadAnswers });
+      sessionStorage.removeItem(draftKey);
       navigate(`/result/${attemptId}`);
     } catch (err) {
       console.error('Auto-submission error:', err);
-      navigate(`/result/${attemptId}`);
+      setSubmitError('Could not confirm submission. Your saved answers are retained. Reconnect and retry submission.');
+      isAutoSubmittingRef.current = false;
+      setSubmitting(false);
     }
-  }, [attemptId, answers, navigate]);
+  }, [attemptId, draftKey, navigate]);
 
   // Request fullscreen
   const enterFullscreen = () => {
@@ -184,6 +211,7 @@ export const StudentTest: React.FC = () => {
         if (statusData.subject_name) setSubjectName(statusData.subject_name);
 
         setRemainingSeconds(statusData.remaining_seconds);
+        deadlineRef.current = Date.now() + statusData.remaining_seconds * 1000;
 
         if (statusData.answers) {
           const preloaded: { [qNum: number]: string } = {};
@@ -191,10 +219,22 @@ export const StudentTest: React.FC = () => {
             if (v) preloaded[parseInt(k, 10)] = v;
           });
           setAnswers(preloaded);
+          answersRef.current = preloaded;
         }
 
         const qRes = await api.get<Question[]>(`/questions?attempt_id=${attemptId}`);
         setQuestions(qRes.data);
+        try {
+          const draft: Record<string, string> = JSON.parse(sessionStorage.getItem(draftKey) || '{}');
+          const validIds = new Set(qRes.data.map(question => question.id));
+          for (const [key, value] of Object.entries(draft)) {
+            if (validIds.has(Number(key)) && ['A', 'B', 'C', 'D'].includes(value)) {
+              if (answersRef.current[Number(key)] !== value) queueRef.current?.set(Number(key), value);
+              answersRef.current[Number(key)] = value;
+            }
+          }
+          setAnswers({ ...answersRef.current });
+        } catch { /* Ignore a damaged local draft; the server copy is authoritative. */ }
       } catch (err: any) {
         console.error('Failed to initialize test:', err);
         if (err.response?.status === 404) {
@@ -206,35 +246,33 @@ export const StudentTest: React.FC = () => {
     };
 
     initTest();
-  }, [attemptId, navigate]);
+  }, [attemptId, draftKey, navigate]);
 
   // Timer Countdown Effect
   useEffect(() => {
-    if (remainingSeconds === null || isTimedOut) return;
+    if (loading || deadlineRef.current === null || isTimedOut) return;
 
-    if (remainingSeconds <= 0) {
+    if (deadlineRef.current <= Date.now()) {
       handleAutoSubmit();
       return;
     }
 
     timerRef.current = setInterval(() => {
-      setRemainingSeconds((prev) => {
-        if (prev === null || prev <= 1) {
-          if (timerRef.current) clearInterval(timerRef.current);
-          handleAutoSubmit();
-          return 0;
-        }
-        return prev - 1;
-      });
+      const remaining = Math.max(0, Math.ceil(((deadlineRef.current ?? Date.now()) - Date.now()) / 1000));
+      setRemainingSeconds(remaining);
+      if (remaining === 0) {
+        if (timerRef.current) clearInterval(timerRef.current);
+        void handleAutoSubmit();
+      }
     }, 1000);
 
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [remainingSeconds, isTimedOut, handleAutoSubmit]);
+  }, [loading, isTimedOut, handleAutoSubmit]);
 
   const handleSelectAnswer = async (selectedKey: string) => {
-    if (!questions[currentIndex] || isTimedOut) return;
+    if (!questions[currentIndex] || isTimedOut || submitting) return;
     const currentQ = questions[currentIndex];
 
     const updatedAnswers = {
@@ -242,35 +280,32 @@ export const StudentTest: React.FC = () => {
       [currentQ.id]: selectedKey,
     };
     setAnswers(updatedAnswers);
-
-    try {
-      await api.post(`/attempts/${attemptId}/answers`, {
-        question_number: currentQ.id,
-        selected_answer: selectedKey,
-      });
-    } catch (err) {
-      console.error('Failed to save answer:', err);
-    }
+    answersRef.current = updatedAnswers;
+    try { sessionStorage.setItem(draftKey, JSON.stringify(updatedAnswers)); } catch { /* Server autosave still works when storage is full. */ }
+    queueRef.current?.set(currentQ.id, selectedKey);
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => { void queueRef.current?.flush().catch(() => {}); }, 600);
   };
 
   const handleManualSubmit = async () => {
     if (submitting || !attemptId) return;
     setSubmitting(true);
     setShowConfirmModal(false);
+    setSubmitError(null);
 
     try {
-      const payloadAnswers = Object.entries(answers).map(([qNum, sel]) => ({
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      await queueRef.current?.flush().catch(() => {});
+      const payloadAnswers = Object.entries(answersRef.current).map(([qNum, sel]) => ({
         question_number: parseInt(qNum, 10),
         selected_answer: sel,
       }));
-      if (payloadAnswers.length > 0) {
-        await api.post(`/attempts/${attemptId}/answers`, { answers: payloadAnswers }).catch(() => {});
-      }
-      await api.post(`/attempts/${attemptId}/submit`);
+      await api.post(`/attempts/${attemptId}/submit`, { answers: payloadAnswers });
+      sessionStorage.removeItem(draftKey);
       navigate(`/result/${attemptId}`);
     } catch (err: any) {
       console.error('Failed to submit test:', err);
-      alert('Failed to submit test. Please try again.');
+      setSubmitError('Submission was not confirmed. Your answers are retained. Please retry.');
     } finally {
       setSubmitting(false);
     }
@@ -309,6 +344,15 @@ export const StudentTest: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-[#F5F8FC] text-slate-800 flex flex-col select-none">
+      {submitError && (
+        <div role="alert" className="bg-rose-50 text-rose-800 px-6 py-3 flex items-center justify-between gap-3">
+          <span>{submitError}</span>
+          <button disabled={submitting} onClick={() => void handleManualSubmit()} className="font-bold underline">Retry submission</button>
+        </div>
+      )}
+      <div role="status" aria-live="polite" className={`px-6 py-2 text-xs ${saveState === 'offline' ? 'bg-amber-50 text-amber-800' : 'bg-slate-50 text-slate-600'}`}>
+        {saveState === 'saved' ? 'All answers saved' : saveState === 'saving' ? 'Saving answers…' : 'Connection interrupted. Answers retained on this device; retrying automatically.'}
+      </div>
       {/* Security Warning Toast */}
       {securityWarningMessage && (
         <div className="bg-rose-50 border-b border-rose-200 text-rose-800 px-6 py-2.5 flex items-center justify-between text-xs sticky top-0 z-50 animate-pulse">

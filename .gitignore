@@ -1,4 +1,7 @@
 .env
+.env.*
+!.env.example
+!.env.*.example
 *.db
 __pycache__/
 *.pyc
@@ -9,6 +12,4 @@ dist/
 backup_checkpoint/
 db_backups/
 db_backup_pre_*/
-dsa-mcq-platform/backend/db_backups/
-dsa-mcq-platform/backend/db_backup_pre_*/
 student_cleanup_investigation_report.json

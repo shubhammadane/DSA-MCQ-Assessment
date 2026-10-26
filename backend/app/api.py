@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Header, Query, UploadFile, File, Form, Request
-from sqlalchemy.orm import Session
-from sqlalchemy import func, or_
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import func, or_, and_, case
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import List, Optional, Dict
@@ -70,14 +70,18 @@ def get_or_create_settings(db: Session) -> models.AssessmentSetting:
 
 def calculate_attempt_score(attempt: models.Attempt, db: Session):
     """Recalculate score and percentage for an attempt based on actual questions."""
-    answers = db.query(models.StudentAnswer).filter(models.StudentAnswer.attempt_id == attempt.id).all()
-    correct_count = sum(1 for a in answers if a.is_correct)
-    wrong_count = sum(1 for a in answers if not a.is_correct)
-    available_marks = sum(max(1, answer.marks or 1) for answer in answers) or 1
-    earned_marks = sum(max(1, answer.marks or 1) for answer in answers if answer.is_correct)
+    db.flush()
+    answer = models.StudentAnswer
+    marks = case((answer.marks > 0, answer.marks), else_=1)
+    total, correct_count, available_marks, earned_marks = db.query(
+        func.count(answer.id),
+        func.coalesce(func.sum(case((answer.is_correct == True, 1), else_=0)), 0),
+        func.coalesce(func.sum(marks), 1),
+        func.coalesce(func.sum(case((answer.is_correct == True, marks), else_=0)), 0),
+    ).filter(answer.attempt_id == attempt.id).one()
     
     attempt.correct_answers = correct_count
-    attempt.wrong_answers = wrong_count
+    attempt.wrong_answers = total - correct_count
     attempt.score = earned_marks
     attempt.percentage = round((earned_marks / available_marks) * 100.0, 2)
 
@@ -121,14 +125,38 @@ def _validate_exam_window(start_date: Optional[str], start_time: Optional[str], 
     return start_at, end_at
 
 
-def _owned_attempt(attempt_id: int, student: models.Student, db: Session) -> models.Attempt:
-    attempt = db.query(models.Attempt).filter(
+def _owned_attempt(attempt_id: int, student: models.Student, db: Session, *, lock: bool = False) -> models.Attempt:
+    query = db.query(models.Attempt).filter(
         models.Attempt.id == attempt_id,
         models.Attempt.student_id == student.id,
-    ).first()
+    )
+    if lock:
+        query = query.with_for_update().populate_existing()
+    attempt = query.first()
     if not attempt:
         raise HTTPException(status_code=404, detail="Attempt not found.")
     return attempt
+
+
+def _apply_answers(attempt_id: int, payload: schemas.BatchAnswersRequest, db: Session) -> int:
+    answers = {answer.question_number: answer.selected_answer for answer in payload.answers}
+    if not answers:
+        return 0
+    rows = db.query(models.StudentAnswer).filter(
+        models.StudentAnswer.attempt_id == attempt_id,
+        models.StudentAnswer.question_number.in_(answers),
+    ).all()
+    if len(rows) != len(answers):
+        raise HTTPException(status_code=400, detail="One or more questions do not belong to this attempt.")
+    now = datetime.utcnow()
+    for row in rows:
+        if row.selected_answer == answers[row.question_number]:
+            continue
+        row.selected_answer = answers[row.question_number]
+        row.is_correct = row.selected_answer == row.correct_answer
+        row.answered_at = now
+    db.flush()
+    return len(rows)
 
 
 def _login_key_hash(key: str) -> str:
@@ -155,9 +183,10 @@ def _record_login_failure(db: Session, key: str) -> None:
     db.commit()
 
 
-def _clear_login_failures(db: Session, key: str) -> None:
+def _clear_login_failures(db: Session, key: str, *, commit: bool = True) -> None:
     db.query(models.LoginFailure).filter(models.LoginFailure.key_hash == _login_key_hash(key)).delete(synchronize_session=False)
-    db.commit()
+    if commit:
+        db.commit()
 
 
 # =========================================================================
@@ -1631,16 +1660,13 @@ def get_student_available_exams(
     CRITICAL REQUIREMENT: STUDENT-SPECIFIC EXAM ACCESS
     Only return exams that are assigned to this specific student via exam_students!
     """
-    assigned_records = db.query(models.ExamStudent).filter(
-        models.ExamStudent.student_id == current_student.id
-    ).all()
-
-    assigned_exam_ids = [ar.exam_id for ar in assigned_records]
-    if not assigned_exam_ids:
-        return []
-
-    exams = db.query(models.Exam).filter(
-        models.Exam.id.in_(assigned_exam_ids),
+    exams = db.query(models.Exam, models.Attempt).join(
+        models.ExamStudent, models.ExamStudent.exam_id == models.Exam.id
+    ).outerjoin(models.Attempt, and_(
+        models.Attempt.exam_id == models.Exam.id,
+        models.Attempt.student_id == current_student.id,
+    )).options(joinedload(models.Exam.subject)).filter(
+        models.ExamStudent.student_id == current_student.id,
         models.Exam.is_active == True,
         models.Exam.status == "published"
     ).order_by(models.Exam.created_at.desc()).all()
@@ -1648,13 +1674,7 @@ def get_student_available_exams(
     results = []
     now = datetime.utcnow()
 
-    for ex in exams:
-        # Check if student already has an attempt
-        attempt = db.query(models.Attempt).filter(
-            models.Attempt.exam_id == ex.id,
-            models.Attempt.student_id == current_student.id
-        ).order_by(models.Attempt.started_at.desc()).first()
-
+    for ex, attempt in exams:
         status_str = "available"
         attempt_id = None
         score = None
@@ -1674,12 +1694,14 @@ def get_student_available_exams(
                 percentage = attempt.percentage
             elif attempt.status == "in_progress":
                 if attempt.deadline_at and now >= attempt.deadline_at:
-                    # Automatically finalize expired attempt
-                    attempt.status = "timed_out"
-                    attempt.completed_at = attempt.deadline_at
-                    calculate_attempt_score(attempt, db)
+                    attempt = _owned_attempt(attempt.id, current_student, db, lock=True)
+                    # A concurrent submission may have completed while we waited.
+                    if attempt.status == "in_progress":
+                        attempt.status = "timed_out"
+                        attempt.completed_at = attempt.deadline_at
+                        calculate_attempt_score(attempt, db)
                     db.commit()
-                    status_str = "timed_out"
+                    status_str = attempt.status
                     score = attempt.score
                     percentage = attempt.percentage
                 else:
@@ -1706,6 +1728,8 @@ def get_student_available_exams(
             ,"requires_session_code": True
         })
 
+    # Release the connection before response serialization is scheduled.
+    db.commit()
     return results
 
 
@@ -1720,7 +1744,7 @@ def list_exams(
     academic_year_id: Optional[int] = None,
     semester_id: Optional[int] = None,
     subject_id: Optional[int] = None,
-    status: Optional[str] = None,
+    exam_status: Optional[str] = Query(default=None, alias="status"),
     search: Optional[str] = None,
     admin: CurrentUser = Depends(get_current_admin),
     db: Session = Depends(get_db)
@@ -1745,17 +1769,19 @@ def list_exams(
         q = q.filter(models.Exam.semester_id == semester_id)
     if subject_id:
         q = q.filter(models.Exam.subject_id == subject_id)
-    if status:
-        q = q.filter(models.Exam.status == status)
+    if exam_status:
+        q = q.filter(models.Exam.status == exam_status)
     if search:
         s = f"%{search.strip()}%"
         q = q.filter(or_(models.Exam.title.ilike(s), models.Exam.code.ilike(s)))
 
-    exams = q.order_by(models.Exam.created_at.desc()).all()
+    assigned_counts = db.query(models.ExamStudent.exam_id, func.count().label("count")).group_by(models.ExamStudent.exam_id).subquery()
+    attempt_counts = db.query(models.Attempt.exam_id, func.count().label("count")).group_by(models.Attempt.exam_id).subquery()
+    exams = q.outerjoin(assigned_counts, assigned_counts.c.exam_id == models.Exam.id).outerjoin(
+        attempt_counts, attempt_counts.c.exam_id == models.Exam.id
+    ).add_columns(func.coalesce(assigned_counts.c.count, 0), func.coalesce(attempt_counts.c.count, 0)).order_by(models.Exam.created_at.desc()).all()
     out = []
-    for ex in exams:
-        assigned_cnt = db.query(models.ExamStudent).filter(models.ExamStudent.exam_id == ex.id).count()
-        attempts_cnt = db.query(models.Attempt).filter(models.Attempt.exam_id == ex.id).count()
+    for ex, assigned_cnt, attempts_cnt in exams:
         e_dict = schemas.ExamOut.model_validate(ex)
         e_dict.assigned_students_count = assigned_cnt
         e_dict.attempts_count = attempts_cnt
@@ -1777,6 +1803,7 @@ def get_exam(exam_id: int, admin: CurrentUser = Depends(get_current_admin), db: 
     e_dict.assigned_students_count = assigned_cnt
     e_dict.attempts_count = attempts_cnt
     e_dict.has_session_code = bool(ex.session_code_hash)
+    e_dict.selected_question_ids = [row.question_id for row in sorted(ex.questions, key=lambda row: row.order_index)]
     return e_dict
 
 
@@ -1891,7 +1918,10 @@ def create_exam(exam_in: schemas.ExamCreate, admin: CurrentUser = Depends(get_cu
     else:
         # Fallback if subject not specified (legacy tests compatibility)
         if exam_in.selection_mode == "random":
-            q_count = db.query(models.Question).filter(models.Question.is_active == True).count()
+            bank = db.query(models.Question).filter(models.Question.is_active == True)
+            if dept_id:
+                bank = bank.filter(models.Question.department_id == dept_id)
+            q_count = bank.count()
             if q_count < exam_in.total_questions:
                 raise HTTPException(
                     status_code=400,
@@ -1933,7 +1963,7 @@ def create_exam(exam_in: schemas.ExamCreate, admin: CurrentUser = Depends(get_cu
         if invalid:
             raise HTTPException(status_code=400, detail=f"Selected questions are inactive or outside the exam scope: {invalid}.")
 
-    total_marks = exam_in.total_marks or (exam_in.total_questions * exam_in.marks_per_question)
+    total_marks = exam_in.total_questions * exam_in.marks_per_question
 
     exam = models.Exam(
         title=title,
@@ -1984,9 +2014,17 @@ def create_exam(exam_in: schemas.ExamCreate, admin: CurrentUser = Depends(get_cu
 
 @router.put("/admin/exams/{exam_id}", response_model=schemas.ExamOut)
 def update_exam(exam_id: int, exam_in: schemas.ExamUpdate, admin: CurrentUser = Depends(get_current_admin), db: Session = Depends(get_db)):
-    exam = db.query(models.Exam).filter(models.Exam.id == exam_id).first()
+    exam = db.query(models.Exam).filter(models.Exam.id == exam_id).with_for_update().first()
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found.")
+
+    structural_fields = {"department_id", "subject_id", "program_id", "academic_year_id", "semester_id", "duration_minutes", "total_questions", "marks_per_question", "total_marks", "selection_mode"}
+    changed = any(getattr(exam_in, name) is not None and getattr(exam_in, name) != getattr(exam, name) for name in structural_fields)
+    if exam_in.selected_question_ids is not None:
+        current_ids = [row.question_id for row in sorted(exam.questions, key=lambda row: row.order_index)]
+        changed = changed or exam_in.selected_question_ids != current_ids
+    if changed and db.query(models.Attempt.id).filter(models.Attempt.exam_id == exam.id).first():
+        raise HTTPException(status_code=409, detail="Questions, marks, duration and academic scope cannot change after a student starts. Create a new exam for those changes.")
 
     if admin.is_hod:
         if exam.department_id != admin.department_id and exam.department_name != admin.department_name:
@@ -1995,16 +2033,22 @@ def update_exam(exam_id: int, exam_in: schemas.ExamUpdate, admin: CurrentUser = 
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Cannot transfer exam to another department.")
 
     _validate_exam_window(
-        exam_in.start_date if exam_in.start_date is not None else exam.start_date,
-        exam_in.start_time if exam_in.start_time is not None else exam.start_time,
-        exam_in.end_date if exam_in.end_date is not None else exam.end_date,
-        exam_in.end_time if exam_in.end_time is not None else exam.end_time,
+        exam_in.start_date if "start_date" in exam_in.model_fields_set else exam.start_date,
+        exam_in.start_time if "start_time" in exam_in.model_fields_set else exam.start_time,
+        exam_in.end_date if "end_date" in exam_in.model_fields_set else exam.end_date,
+        exam_in.end_time if "end_time" in exam_in.model_fields_set else exam.end_time,
     )
 
     target_dept_id = admin.department_id if admin.is_hod else (exam_in.department_id if exam_in.department_id is not None else exam.department_id)
     target_subj_id = exam_in.subject_id if exam_in.subject_id is not None else exam.subject_id
     target_selection_mode = exam_in.selection_mode if exam_in.selection_mode is not None else exam.selection_mode
     target_question_count = exam_in.total_questions if exam_in.total_questions is not None else exam.total_questions
+    if exam_in.title is not None:
+        if not exam_in.title.strip():
+            raise HTTPException(status_code=400, detail="Exam title is required.")
+        exam.title = exam_in.title.strip()
+    if "code" in exam_in.model_fields_set:
+        exam.code = exam_in.code.strip() if exam_in.code else None
 
     # Validate department update if requested (Super Admin only)
     if exam_in.department_id is not None and not admin.is_hod:
@@ -2051,13 +2095,21 @@ def update_exam(exam_id: int, exam_in: schemas.ExamUpdate, admin: CurrentUser = 
             raise HTTPException(status_code=400, detail="Selected semester does not exist or is inactive.")
         exam.semester_id = sem.id
         exam.semester_name = sem.name
-    if exam_in.start_date is not None:
+    if exam.academic_year_id:
+        year = db.get(models.AcademicYear, exam.academic_year_id)
+        if exam.program_id and year.program_id != exam.program_id:
+            raise HTTPException(status_code=400, detail="Selected academic year does not belong to the selected program.")
+    if exam.semester_id:
+        semester = db.get(models.Semester, exam.semester_id)
+        if (exam.academic_year_id and semester.academic_year_id != exam.academic_year_id) or (exam.program_id and semester.program_id != exam.program_id):
+            raise HTTPException(status_code=400, detail="Selected semester does not belong to the selected program and year.")
+    if "start_date" in exam_in.model_fields_set:
         exam.start_date = exam_in.start_date
-    if exam_in.start_time is not None:
+    if "start_time" in exam_in.model_fields_set:
         exam.start_time = exam_in.start_time
-    if exam_in.end_date is not None:
+    if "end_date" in exam_in.model_fields_set:
         exam.end_date = exam_in.end_date
-    if exam_in.end_time is not None:
+    if "end_time" in exam_in.model_fields_set:
         exam.end_time = exam_in.end_time
     if exam_in.duration_minutes is not None:
         exam.duration_minutes = exam_in.duration_minutes
@@ -2077,6 +2129,7 @@ def update_exam(exam_id: int, exam_in: schemas.ExamUpdate, admin: CurrentUser = 
         exam.is_active = exam_in.is_active
     if exam_in.result_release_mode is not None:
         exam.result_release_mode = exam_in.result_release_mode
+    exam.total_marks = exam.total_questions * exam.marks_per_question
 
     if target_selection_mode == "random":
         question_query = db.query(models.Question).filter(models.Question.is_active == True)
@@ -2087,8 +2140,11 @@ def update_exam(exam_id: int, exam_in: schemas.ExamUpdate, admin: CurrentUser = 
         if question_query.count() < target_question_count:
             raise HTTPException(status_code=400, detail="The selected question bank does not contain enough active questions.")
 
-    if exam_in.selected_question_ids is not None:
-        selected_ids = exam_in.selected_question_ids
+    if target_selection_mode == "manual":
+        if exam_in.selected_question_ids is None:
+            selected_ids = [row.question_id for row in exam.questions]
+        else:
+            selected_ids = exam_in.selected_question_ids
         expected_count = exam_in.total_questions if exam_in.total_questions is not None else exam.total_questions
         if len(selected_ids) != len(set(selected_ids)) or len(selected_ids) != expected_count:
             raise HTTPException(status_code=400, detail="Manual selection must contain unique IDs matching total_questions.")
@@ -2099,8 +2155,10 @@ def update_exam(exam_id: int, exam_in: schemas.ExamUpdate, admin: CurrentUser = 
         if invalid:
             raise HTTPException(status_code=400, detail=f"Selected questions are inactive or outside the exam scope: {invalid}.")
         db.query(models.ExamQuestion).filter(models.ExamQuestion.exam_id == exam.id).delete()
-        for idx, qid in enumerate(exam_in.selected_question_ids, start=1):
+        for idx, qid in enumerate(selected_ids, start=1):
             db.add(models.ExamQuestion(exam_id=exam.id, question_id=qid, order_index=idx))
+    else:
+        db.query(models.ExamQuestion).filter(models.ExamQuestion.exam_id == exam.id).delete()
 
     exam.updated_at = datetime.utcnow()
     db.commit()
@@ -2123,6 +2181,8 @@ def set_exam_status(exam_id: int, status_in: schemas.QuestionStatusUpdate, statu
     if admin.is_hod and exam.department_id != admin.department_id and exam.department_name != admin.department_name:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Exam does not belong to your department.")
     if status_name:
+        if status_name not in {"draft", "published", "closed", "archived"}:
+            raise HTTPException(status_code=400, detail="Invalid examination status.")
         exam.status = status_name
     exam.is_active = status_in.is_active
     exam.updated_at = datetime.utcnow()
@@ -2145,16 +2205,14 @@ def get_exam_assigned_students(exam_id: int, admin: CurrentUser = Depends(get_cu
     if admin.is_hod and exam.department_id != admin.department_id and exam.department_name != admin.department_name:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Exam does not belong to your department.")
 
-    assignments = db.query(models.ExamStudent).filter(models.ExamStudent.exam_id == exam_id).all()
+    assignments = db.query(models.ExamStudent).options(joinedload(models.ExamStudent.student)).filter(models.ExamStudent.exam_id == exam_id).all()
+    attempts = {row.student_id: row for row in db.query(models.Attempt).filter(models.Attempt.exam_id == exam_id).all()}
     results = []
     for a in assignments:
         st = a.student
         if not st:
             continue
-        attempt = db.query(models.Attempt).filter(
-            models.Attempt.exam_id == exam_id,
-            models.Attempt.student_id == st.id
-        ).order_by(models.Attempt.started_at.desc()).first()
+        attempt = attempts.get(st.id)
 
         results.append({
             "student_id": st.id,
@@ -2181,7 +2239,7 @@ def assign_students_to_exam(
     admin: CurrentUser = Depends(get_current_admin),
     db: Session = Depends(get_db)
 ):
-    exam = db.query(models.Exam).filter(models.Exam.id == exam_id).first()
+    exam = db.query(models.Exam).filter(models.Exam.id == exam_id).with_for_update().first()
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found.")
     if len(assign_in.student_ids) != len(set(assign_in.student_ids)):
@@ -2202,29 +2260,34 @@ def assign_students_to_exam(
         if st_count < len(assign_in.student_ids):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Cannot assign students from another department.")
 
-    now = datetime.utcnow()
-    added_count = 0
-    for sid in assign_in.student_ids:
-        exists = db.query(models.ExamStudent).filter(
-            models.ExamStudent.exam_id == exam_id,
-            models.ExamStudent.student_id == sid
-        ).first()
-        if not exists:
-            db.add(models.ExamStudent(exam_id=exam_id, student_id=sid, assigned_at=now))
-            added_count += 1
+    existing_ids = {row.student_id for row in db.query(models.ExamStudent.student_id).filter(models.ExamStudent.exam_id == exam_id).all()}
+    requested_ids = set(assign_in.student_ids)
+    removed_count = 0
+    if assign_in.replace:
+        removed_ids = existing_ids - requested_ids
+        if removed_ids:
+            if db.query(models.Attempt.id).filter(models.Attempt.exam_id == exam_id, models.Attempt.student_id.in_(removed_ids)).first():
+                raise HTTPException(status_code=409, detail="Students who have started this exam must remain assigned to preserve access to their attempt and results.")
+            removed_count = db.query(models.ExamStudent).filter(models.ExamStudent.exam_id == exam_id, models.ExamStudent.student_id.in_(removed_ids)).delete(synchronize_session=False)
+    new_ids = requested_ids - existing_ids
+    db.add_all([models.ExamStudent(exam_id=exam_id, student_id=sid, assigned_at=datetime.utcnow()) for sid in new_ids])
+    added_count = len(new_ids)
     db.commit()
 
     total_assigned = db.query(models.ExamStudent).filter(models.ExamStudent.exam_id == exam_id).count()
-    return {"message": f"Successfully assigned {added_count} students to '{exam.title}'.", "total_assigned": total_assigned}
+    return {"message": f"Saved assignments for '{exam.title}': {added_count} added, {removed_count} removed.", "total_assigned": total_assigned}
 
 
 @router.delete("/admin/exams/{exam_id}/students/{student_id}")
 def unassign_student_from_exam(exam_id: int, student_id: int, admin: CurrentUser = Depends(get_current_admin), db: Session = Depends(get_db)):
-    exam = db.query(models.Exam).filter(models.Exam.id == exam_id).first()
+    exam = db.query(models.Exam).filter(models.Exam.id == exam_id).with_for_update().first()
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found.")
     if admin.is_hod and exam.department_id != admin.department_id and exam.department_name != admin.department_name:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Exam does not belong to your department.")
+
+    if db.query(models.Attempt.id).filter(models.Attempt.exam_id == exam_id, models.Attempt.student_id == student_id).first():
+        raise HTTPException(status_code=409, detail="A student who has started must remain assigned to this examination.")
 
     rec = db.query(models.ExamStudent).filter(
         models.ExamStudent.exam_id == exam_id,
@@ -2429,7 +2492,9 @@ def student_start_exam(
     Enforces authorization on the backend.
     Unassigned student receives 403 Forbidden.
     """
-    exam = db.query(models.Exam).filter(models.Exam.id == exam_id).first()
+    # Serialize only starts for this student; different students start concurrently.
+    db.query(models.Student.id).filter(models.Student.id == current_student.id).with_for_update().first()
+    exam = db.query(models.Exam).filter(models.Exam.id == exam_id).with_for_update(read=True).first()
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found.")
 
@@ -2446,7 +2511,7 @@ def student_start_exam(
     if not _verify_session_code(exam, start_in.session_code):
         _record_login_failure(db, code_rate_key)
         raise HTTPException(status_code=403, detail="Invalid exam session code.")
-    _clear_login_failures(db, code_rate_key)
+    _clear_login_failures(db, code_rate_key, commit=False)
 
     # BACKEND AUTHORIZATION CHECK: Is student assigned?
     assignment = db.query(models.ExamStudent).filter(
@@ -2472,7 +2537,7 @@ def student_start_exam(
     existing_attempt = db.query(models.Attempt).filter(
         models.Attempt.exam_id == exam_id,
         models.Attempt.student_id == current_student.id
-    ).order_by(models.Attempt.started_at.desc()).first()
+    ).order_by(models.Attempt.started_at.desc()).with_for_update().first()
 
     if existing_attempt:
         if existing_attempt.status in ["completed", "timed_out"]:
@@ -2486,6 +2551,7 @@ def student_start_exam(
             db.commit()
             raise HTTPException(status_code=400, detail="Your exam attempt time limit has expired.")
 
+        db.commit()
         # Resume existing attempt
         return {
             "attempt_id": existing_attempt.id,
@@ -2508,7 +2574,7 @@ def student_start_exam(
     # 1. Manual mode: use exam_questions
     chosen_questions = []
     if exam.selection_mode == "manual":
-        eqs = db.query(models.ExamQuestion).filter(models.ExamQuestion.exam_id == exam.id).order_by(models.ExamQuestion.order_index.asc()).all()
+        eqs = db.query(models.ExamQuestion).options(joinedload(models.ExamQuestion.question)).filter(models.ExamQuestion.exam_id == exam.id).order_by(models.ExamQuestion.order_index.asc()).all()
         for eq in eqs:
             if eq.question and eq.question.is_active:
                 chosen_questions.append(eq.question)
@@ -2523,7 +2589,8 @@ def student_start_exam(
         elif exam.department_id:
             q_filter = q_filter.filter(models.Question.department_id == exam.department_id)
 
-        available_qs = q_filter.all()
+        available_ids = [row.id for row in q_filter.with_entities(models.Question.id).all()]
+        available_qs = available_ids
         if len(available_qs) < exam.total_questions:
             # Check if this is the legacy/unassigned assessment, else enforce subject questions
             if exam.subject_id or exam.department_id:
@@ -2536,14 +2603,15 @@ def student_start_exam(
 
         needed = exam.total_questions - len(chosen_questions)
         already_ids = {q.id for q in chosen_questions}
-        pool = [q for q in available_qs if q.id not in already_ids]
+        pool = [qid for qid in available_ids if qid not in already_ids]
         if len(pool) < needed:
             raise HTTPException(
                 status_code=400,
                 detail=f"Only {len(pool)} question(s) available in subject bank to select."
             )
-        sampled = random.sample(pool, needed)
-        chosen_questions.extend(sampled)
+        sampled_ids = random.sample(pool, needed)
+        selected = {q.id: q for q in db.query(models.Question).filter(models.Question.id.in_(sampled_ids)).all()}
+        chosen_questions.extend(selected[qid] for qid in sampled_ids)
 
     if len(chosen_questions) != exam.total_questions:
         raise HTTPException(status_code=400, detail="The exam question set is incomplete.")
@@ -2581,7 +2649,7 @@ def student_start_exam(
             option_d=q.option_d,
             selected_answer=None,
             correct_answer=q.correct_answer,
-            marks=q.marks or exam.marks_per_question or 1,
+            marks=exam.marks_per_question,
             is_correct=False,
             answered_at=started_at
         )
@@ -2616,7 +2684,7 @@ def record_security_log(
     current_student: models.Student = Depends(get_current_student),
     db: Session = Depends(get_db)
 ):
-    attempt = _owned_attempt(attempt_id, current_student, db)
+    attempt = _owned_attempt(attempt_id, current_student, db, lock=True)
 
     now = datetime.utcnow()
 
@@ -2681,6 +2749,8 @@ def get_questions(
                 "question": q_text or f"Question {sa.question_number}",
                 "options": opts
             })
+        # Release the connection before response serialization is scheduled.
+        db.commit()
         return sanitized
 
     asst_setting = get_or_create_settings(db)
@@ -2732,7 +2802,7 @@ def get_attempt_status(
     current_student: models.Student = Depends(get_current_student),
     db: Session = Depends(get_db),
 ):
-    attempt = _owned_attempt(attempt_id, current_student, db)
+    attempt = _owned_attempt(attempt_id, current_student, db, lock=True)
 
     now = datetime.utcnow()
 
@@ -2754,6 +2824,8 @@ def get_attempt_status(
 
     answers_map = {sa.question_number: sa.selected_answer for sa in student_answers}
 
+    # Release the connection before response serialization is scheduled.
+    db.commit()
     return {
         "attempt_id": attempt.id,
         "status": attempt.status,
@@ -2780,7 +2852,7 @@ def save_student_answer(
     current_student: models.Student = Depends(get_current_student),
     db: Session = Depends(get_db)
 ):
-    attempt = _owned_attempt(attempt_id, current_student, db)
+    attempt = _owned_attempt(attempt_id, current_student, db, lock=True)
 
     now = datetime.utcnow()
     # Check if timer expired
@@ -2792,23 +2864,7 @@ def save_student_answer(
             db.commit()
         raise HTTPException(status_code=400, detail="Cannot save answers: Attempt has been completed or timed out.")
 
-    updated_count = 0
-    for ans in payload.answers:
-        q_num = ans.question_number
-        sel = ans.selected_answer
-        if sel is not None:
-            sel = sel.strip().upper()
-
-        sa = db.query(models.StudentAnswer).filter(
-            models.StudentAnswer.attempt_id == attempt_id,
-            models.StudentAnswer.question_number == q_num
-        ).first()
-
-        if sa:
-            sa.selected_answer = sel
-            sa.is_correct = (sel == sa.correct_answer)
-            sa.answered_at = now
-            updated_count += 1
+    updated_count = _apply_answers(attempt_id, payload, db)
 
     db.commit()
     return {"status": "success", "updated_count": updated_count}
@@ -2819,15 +2875,18 @@ def submit_attempt(
     attempt_id: int,
     current_student: models.Student = Depends(get_current_student),
     db: Session = Depends(get_db),
+    payload: Optional[schemas.BatchAnswersRequest] = None,
 ):
-    attempt = _owned_attempt(attempt_id, current_student, db)
+    attempt = _owned_attempt(attempt_id, current_student, db, lock=True)
 
     now = datetime.utcnow()
     if attempt.status == "in_progress":
         is_timed_out = attempt.deadline_at and now >= attempt.deadline_at
+        if payload is not None and not is_timed_out:
+            _apply_answers(attempt_id, payload, db)
         attempt.status = "timed_out" if is_timed_out else "completed"
         attempt.submitted_at = now
-        attempt.completed_at = now
+        attempt.completed_at = attempt.deadline_at if is_timed_out else now
         calculate_attempt_score(attempt, db)
         db.commit()
         db.refresh(attempt)
@@ -2841,7 +2900,15 @@ def get_attempt_result(
     current_student: models.Student = Depends(get_current_student),
     db: Session = Depends(get_db),
 ):
-    attempt = _owned_attempt(attempt_id, current_student, db)
+    attempt = _owned_attempt(attempt_id, current_student, db, lock=True)
+    if attempt.status == "in_progress":
+        if attempt.deadline_at and datetime.utcnow() >= attempt.deadline_at:
+            attempt.status = "timed_out"
+            attempt.completed_at = attempt.deadline_at
+            calculate_attempt_score(attempt, db)
+            db.commit()
+        else:
+            raise HTTPException(status_code=409, detail="Submit the exam before viewing its result.")
 
     student = db.query(models.Student).filter(models.Student.id == attempt.student_id).first()
     student_answers = db.query(models.StudentAnswer).filter(
@@ -2895,6 +2962,8 @@ def get_attempt_result(
             "is_correct": sa.is_correct
         })
 
+    # Release the connection before response serialization is scheduled.
+    db.commit()
     return {
         "student": student,
         "attempt": attempt,

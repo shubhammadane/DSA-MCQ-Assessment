@@ -323,6 +323,7 @@ class ExamUpdate(BaseModel):
 
 class ExamOut(BaseModel):
     id: int
+    selected_question_ids: List[int] = Field(default_factory=list)
     title: str
     code: Optional[str] = None
     department_id: Optional[int] = None
@@ -359,7 +360,8 @@ class ExamOut(BaseModel):
         from_attributes = True
 
 class AssignStudentsRequest(BaseModel):
-    student_ids: List[int]
+    student_ids: List[int] = Field(max_length=5000)
+    replace: bool = False
 
 class AssignedStudentOut(BaseModel):
     student_id: int

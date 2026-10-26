@@ -117,6 +117,9 @@ def get_current_admin(
 
         if user:
             dept_name = user.department.name if user.department else None
+            # Release the read transaction before FastAPI schedules the endpoint.
+            # Otherwise queued dependencies can occupy every pooled connection.
+            db.commit()
             return CurrentUser(
                 id=user.id,
                 username=user.username,
@@ -205,4 +208,7 @@ def get_current_student(
             detail="Student account is inactive or not found",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    # Auth runs in a worker before the endpoint. Do not hold a pool connection
+    # across that scheduling boundary during a simultaneous class login/start.
+    db.commit()
     return student
