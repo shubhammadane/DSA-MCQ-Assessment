@@ -92,7 +92,7 @@ def upgrade() -> None:
         os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'dsa_questions.json'),
         os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', 'dsa_questions.json'),
         os.path.join(os.getcwd(), 'dsa_questions.json'),
-        os.path.join(os.getcwd(), 'dsa-mcq-platform', 'backend', 'dsa_questions.json'),
+        os.path.join(os.getcwd(), 'backend', 'dsa_questions.json'),
     ]
     json_path = None
     for p in candidate_paths:

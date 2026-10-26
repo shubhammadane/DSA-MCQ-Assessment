@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import {
   Users, CheckCircle2, LogOut, Download, FileText,
   UserCheck, Search, Eye, HelpCircle, Sliders, Plus, Edit3, Power,
@@ -20,9 +20,13 @@ type DashboardTab = 'overview' | 'academic' | 'students' | 'subjects' | 'questio
 
 export const AdminDashboard: React.FC = () => {
   const navigate = useNavigate();
+  const location = useLocation();
 
   // Active Tab
-  const [activeTab, setActiveTab] = useState<DashboardTab>('overview');
+  const [activeTab, setActiveTab] = useState<DashboardTab>(() => {
+    const tab = location.pathname.split('/')[2];
+    return ['academic', 'students', 'subjects', 'questions', 'exams', 'settings'].includes(tab) ? tab as DashboardTab : 'overview';
+  });
 
   // Stats & Loading
   const [stats, setStats] = useState<AdminStats | null>(null);
@@ -40,8 +44,11 @@ export const AdminDashboard: React.FC = () => {
 
   // Global Notification
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
-  const showNotice = (type: 'success' | 'error', message: string) => {
-    setNotification({ type, message });
+  const showNotice = (type: 'success' | 'error', message: unknown) => {
+    const text = typeof message === 'string' ? message : Array.isArray(message)
+      ? message.map(item => typeof item?.msg === 'string' ? item.msg : 'Invalid form value').join('. ')
+      : 'The request could not be completed. Please retry.';
+    setNotification({ type, message: text });
     setTimeout(() => setNotification(null), 5000);
   };
 
@@ -150,6 +157,8 @@ export const AdminDashboard: React.FC = () => {
   const [examSearch, setExamSearch] = useState('');
   const [examStatusFilter, setExamStatusFilter] = useState('');
   const [showCreateExamModal, setShowCreateExamModal] = useState(false);
+  const [examSaving, setExamSaving] = useState(false);
+  const [examSelectedQuestionIds, setExamSelectedQuestionIds] = useState<number[]>([]);
   const [editingExam, setEditingExam] = useState<Exam | null>(null);
   const [assigningExam, setAssigningExam] = useState<Exam | null>(null);
   const [assignedStudents, setAssignedStudents] = useState<AssignedStudent[]>([]);
@@ -284,7 +293,7 @@ export const AdminDashboard: React.FC = () => {
           setStFormDept(user.department_name);
           setRecordsDeptFilter(user.department_name);
         }
-        setActiveTab('subjects');
+        if (location.pathname === '/admin/dashboard') setActiveTab('subjects');
       } else if (loadedDepts.length > 0) {
         setImportDept(loadedDepts[0].name);
         setStFormDept(loadedDepts[0].name);
@@ -353,6 +362,7 @@ export const AdminDashboard: React.FC = () => {
       setExams(res.data);
     } catch (err) {
       console.error('Failed to load exams', err);
+      showNotice('error', 'Could not load examinations. Check the API connection and try again.');
     }
   };
 
@@ -421,6 +431,12 @@ export const AdminDashboard: React.FC = () => {
     // Loader functions are intentionally scoped to the selected tab.
     // oxlint-disable-next-line react-hooks/exhaustive-deps, react(set-state-in-effect)
   }, [activeTab]);
+
+  useEffect(() => {
+    if (showCreateExamModal) void loadQuestions();
+    // Load the question bank even when Questions has never been opened.
+    // oxlint-disable-next-line react-hooks/exhaustive-deps, react(set-state-in-effect)
+  }, [showCreateExamModal]);
 
   const handleCreateBackup = async () => {
     setCreatingBackup(true);
@@ -1123,6 +1139,7 @@ export const AdminDashboard: React.FC = () => {
   const handleExamDeptChange = async (newDeptId: number | '') => {
     setExamFormDeptId(newDeptId);
     setExamFormSubjectId(''); // Requirement 2: Changing department must clear any invalid previous selection!
+    setExamSelectedQuestionIds([]);
     if (newDeptId) {
       try {
         const res = await api.get<Subject[]>('/subjects', {
@@ -1150,7 +1167,7 @@ export const AdminDashboard: React.FC = () => {
     setExamFormDeptId(initialDeptId);
     setExamFormSubjectId(''); // Cleared so user makes an explicit valid selection
 
-    const initialProgId = programs.length > 0 ? programs[0].id : 1;
+    const initialProgId = programs.length > 0 ? programs[0].id : '';
     setExamFormProgId(initialProgId);
     const validYears = getFilteredYears(initialProgId);
     const initialYearId = validYears.length > 0 ? validYears[0].id : '';
@@ -1184,12 +1201,42 @@ export const AdminDashboard: React.FC = () => {
     setExamFormEndDate('');
     setExamFormEndTime('');
     setExamFormResultRelease('after_close');
-    setSelectedQuestionIds([]);
+    setExamSelectedQuestionIds([]);
     setShowCreateExamModal(true);
+  };
+
+  const openEditExamModal = async (exam: Exam) => {
+    try {
+      const { data } = await api.get<Exam>(`/admin/exams/${exam.id}`);
+      setEditingExam(data);
+      setExamFormTitle(data.title);
+      setExamFormCode(data.code || '');
+      setExamFormDeptId(data.department_id || '');
+      setExamFormProgId(data.program_id || '');
+      setExamFormYearId(data.academic_year_id || '');
+      setExamFormSemId(data.semester_id || '');
+      setExamFormSubjectId(data.subject_id || '');
+      setExamFormDuration(data.duration_minutes);
+      setExamFormQuestionsCount(data.total_questions);
+      setExamFormMarksPerQ(data.marks_per_question);
+      setExamFormPassingPct(data.passing_percentage);
+      setExamFormSelectionMode(data.selection_mode as 'random' | 'manual');
+      setExamFormStatus(data.status);
+      setExamFormStartDate(data.start_date || '');
+      setExamFormStartTime(data.start_time || '');
+      setExamFormEndDate(data.end_date || '');
+      setExamFormEndTime(data.end_time || '');
+      setExamFormResultRelease(data.result_release_mode);
+      setExamSelectedQuestionIds(data.selected_question_ids || []);
+      setShowCreateExamModal(true);
+    } catch {
+      showNotice('error', 'Could not open this examination. Please retry.');
+    }
   };
 
   const handleSaveExam = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (examSaving) return;
     if (!examFormTitle.trim()) {
       showNotice('error', 'Exam Title is required.');
       return;
@@ -1202,15 +1249,16 @@ export const AdminDashboard: React.FC = () => {
       showNotice('error', 'Subject is required. Please select a Subject for this examination.');
       return;
     }
-    if (examFormSelectionMode === 'manual' && selectedQuestionIds.length !== examFormQuestionsCount) {
+    if (examFormSelectionMode === 'manual' && examSelectedQuestionIds.length !== examFormQuestionsCount) {
       showNotice('error', `Select exactly ${examFormQuestionsCount} active questions for manual mode.`);
       return;
     }
 
+    setExamSaving(true);
     try {
       const payload = {
         title: examFormTitle.trim(),
-        code: examFormCode.trim() || undefined,
+        code: examFormCode.trim() || null,
         subject_id: Number(examFormSubjectId),
         department_id: Number(examFormDeptId),
         program_id: examFormProgId ? Number(examFormProgId) : undefined,
@@ -1222,12 +1270,12 @@ export const AdminDashboard: React.FC = () => {
         total_marks: examFormQuestionsCount * examFormMarksPerQ,
         passing_percentage: examFormPassingPct,
         selection_mode: examFormSelectionMode,
-        selected_question_ids: examFormSelectionMode === 'manual' ? selectedQuestionIds : undefined,
+        selected_question_ids: examFormSelectionMode === 'manual' ? examSelectedQuestionIds : undefined,
         status: examFormStatus,
-        start_date: examFormStartDate || undefined,
-        start_time: examFormStartTime || undefined,
-        end_date: examFormEndDate || undefined,
-        end_time: examFormEndTime || undefined,
+        start_date: examFormStartDate || null,
+        start_time: examFormStartTime || null,
+        end_date: examFormEndDate || null,
+        end_time: examFormEndTime || null,
         result_release_mode: examFormResultRelease
       };
 
@@ -1248,6 +1296,8 @@ export const AdminDashboard: React.FC = () => {
       loadExams();
     } catch (err: any) {
       showNotice('error', err.response?.data?.detail || 'Failed to save exam.');
+    } finally {
+      setExamSaving(false);
     }
   };
 
@@ -1323,7 +1373,6 @@ export const AdminDashboard: React.FC = () => {
 
   // Student Assignment Modal
   const openAssignModal = async (exam: Exam) => {
-    setAssigningExam(exam);
     try {
       const [stRes, assignedRes] = await Promise.all([
         api.get<Student[]>('/admin/students/list'),
@@ -1332,6 +1381,7 @@ export const AdminDashboard: React.FC = () => {
       setStudentsList(stRes.data);
       setAssignedStudents(assignedRes.data);
       setSelectedStudentIdsToAssign(assignedRes.data.map(s => s.student_id));
+      setAssigningExam(exam);
       if (exam.department_name) {
         setAssignFilterDept(exam.department_name);
       } else {
@@ -1339,6 +1389,7 @@ export const AdminDashboard: React.FC = () => {
       }
     } catch (err) {
       console.error('Failed to load students for assignment', err);
+      showNotice('error', 'Could not load student assignments. Please retry.');
     }
   };
 
@@ -1346,7 +1397,8 @@ export const AdminDashboard: React.FC = () => {
     if (!assigningExam) return;
     try {
       const res = await api.post(`/admin/exams/${assigningExam.id}/assign`, {
-        student_ids: selectedStudentIdsToAssign
+        student_ids: selectedStudentIdsToAssign,
+        replace: true,
       });
       showNotice('success', res.data.message || 'Student assignments updated successfully.');
       setAssigningExam(null);
@@ -1504,12 +1556,10 @@ export const AdminDashboard: React.FC = () => {
     ? subjects.filter(s => {
         if (!s.is_active) return false;
         if (s.department_id !== Number(examFormDeptId)) return false;
-        if (examFormProgId && s.program_id && s.program_id !== Number(examFormProgId)) return false;
-        if (examFormYearId && s.academic_year_id && s.academic_year_id !== Number(examFormYearId)) return false;
-        if (examFormSemId && s.semester_id && s.semester_id !== Number(examFormSemId)) return false;
         return true;
       })
     : [];
+  const examBankQuestions = questions.filter(question => question.is_active && question.subject_id === Number(examFormSubjectId));
 
   const filteredSubjects = subjects.filter((s) => {
     const matchSearch = !subjectSearch || s.name.toLowerCase().includes(subjectSearch.toLowerCase()) || s.code.toLowerCase().includes(subjectSearch.toLowerCase());
@@ -3218,6 +3268,9 @@ export const AdminDashboard: React.FC = () => {
                             </span>
                           </td>
                           <td className="py-3.5 px-4 text-right space-x-1.5 whitespace-nowrap">
+                            <button onClick={() => void openEditExamModal(ex)} title="Edit Examination" className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg inline-flex items-center cursor-pointer">
+                              <Edit3 className="w-4 h-4" />
+                            </button>
                             <button
                               onClick={() => openAssignModal(ex)}
                               className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold transition-colors inline-flex items-center space-x-1 cursor-pointer"
@@ -4724,7 +4777,17 @@ export const AdminDashboard: React.FC = () => {
                 <select
                   required
                   value={examFormSubjectId}
-                  onChange={(e) => setExamFormSubjectId(e.target.value ? Number(e.target.value) : '')}
+                  onChange={(e) => {
+                    const id = e.target.value ? Number(e.target.value) : '';
+                    setExamFormSubjectId(id);
+                    setExamSelectedQuestionIds([]);
+                    const subject = subjects.find(item => item.id === id);
+                    if (subject) {
+                      setExamFormProgId(subject.program_id || '');
+                      setExamFormYearId(subject.academic_year_id || '');
+                      setExamFormSemId(subject.semester_id || '');
+                    }
+                  }}
                   disabled={!examFormDeptId}
                   className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
@@ -4745,6 +4808,12 @@ export const AdminDashboard: React.FC = () => {
                 </select>
               </div>
 
+              {examFormSubjectId && (
+                <p className={`text-xs ${examBankQuestions.length < examFormQuestionsCount ? 'text-amber-700' : 'text-slate-600'}`}>
+                  {examBankQuestions.length} active questions available for this subject.
+                  {examBankQuestions.length < examFormQuestionsCount && ' Add or import questions, or reduce the question count.'}
+                </p>
+              )}
               {/* Duration, Questions, Marks, Pass % */}
               <div className="grid grid-cols-4 gap-2">
                 <div>
@@ -4818,13 +4887,13 @@ export const AdminDashboard: React.FC = () => {
 
               {examFormSelectionMode === 'manual' && (
                 <div className="border border-slate-200 rounded-xl p-3 max-h-48 overflow-y-auto space-y-2">
-                  <p className="font-bold text-slate-700 sticky top-0 bg-white pb-1">Select {examFormQuestionsCount} questions ({selectedQuestionIds.length} selected)</p>
-                  {questions.filter(question => question.is_active && question.subject_id === Number(examFormSubjectId)).map(question => (
+                  <p className="font-bold text-slate-700 sticky top-0 bg-white pb-1">Select {examFormQuestionsCount} questions ({examSelectedQuestionIds.length} selected)</p>
+                  {examBankQuestions.map(question => (
                     <label key={question.id} className="flex items-start gap-2 text-xs text-slate-700">
                       <input
                         type="checkbox"
-                        checked={selectedQuestionIds.includes(question.id)}
-                        onChange={(event) => setSelectedQuestionIds(previous => event.target.checked ? [...previous, question.id] : previous.filter(id => id !== question.id))}
+                        checked={examSelectedQuestionIds.includes(question.id)}
+                        onChange={(event) => setExamSelectedQuestionIds(previous => event.target.checked ? [...previous, question.id] : previous.filter(id => id !== question.id))}
                       />
                       <span>{question.question_text}</span>
                     </label>
@@ -4879,9 +4948,10 @@ export const AdminDashboard: React.FC = () => {
                 </button>
                 <button
                   type="submit"
+                  disabled={examSaving}
                   className="flex-1 py-2.5 bg-purple-600 hover:bg-purple-500 text-white rounded-xl font-bold"
                 >
-                  {editingExam ? 'Save Changes' : 'Create Exam'}
+                  {examSaving ? 'Saving…' : editingExam ? 'Save Changes' : 'Create Exam'}
                 </button>
               </div>
             </form>

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Text, Boolean, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Text, Boolean, UniqueConstraint, Index
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from app.database import Base
@@ -100,6 +100,8 @@ class Student(Base):
 
 class Question(Base):
     __tablename__ = "questions"
+    __table_args__ = (Index("ix_questions_subject_active", "subject_id", "is_active"),
+                      Index("ix_questions_department_active", "department_id", "is_active"))
 
     id = Column(Integer, primary_key=True, index=True)
     question_text = Column(Text, nullable=False)
@@ -194,6 +196,7 @@ class ExamStudent(Base):
 
     __table_args__ = (
         UniqueConstraint("exam_id", "student_id", name="uq_exam_student"),
+        Index("ix_exam_students_student_exam", "student_id", "exam_id"),
     )
 
     exam = relationship("Exam", back_populates="assigned_students")
@@ -211,6 +214,11 @@ class AssessmentSetting(Base):
 
 class Attempt(Base):
     __tablename__ = "attempts"
+    __table_args__ = (
+        UniqueConstraint("student_id", "exam_id", name="uq_attempt_student_exam"),
+        Index("ix_attempts_exam_status", "exam_id", "status"),
+        Index("ix_attempts_status_deadline", "status", "deadline_at"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     student_id = Column(Integer, ForeignKey("students.id"), nullable=False)
@@ -242,6 +250,9 @@ class Attempt(Base):
 
 class StudentAnswer(Base):
     __tablename__ = "student_answers"
+    __table_args__ = (
+        UniqueConstraint("attempt_id", "question_number", name="uq_answer_attempt_question"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     attempt_id = Column(Integer, ForeignKey("attempts.id"), nullable=False)
@@ -263,6 +274,7 @@ class StudentAnswer(Base):
 
 class ExamSecurityLog(Base):
     __tablename__ = "exam_security_logs"
+    __table_args__ = (Index("ix_security_logs_attempt_time", "attempt_id", "occurred_at"),)
 
     id = Column(Integer, primary_key=True, index=True)
     attempt_id = Column(Integer, ForeignKey("attempts.id", ondelete="CASCADE"), nullable=False)
@@ -294,6 +306,7 @@ class AdminUser(Base):
 class LoginFailure(Base):
     """Shared, expiring login throttling state across workers and restarts."""
     __tablename__ = "login_failures"
+    __table_args__ = (Index("ix_login_failures_key_time", "key_hash", "attempted_at"),)
 
     id = Column(Integer, primary_key=True, index=True)
     key_hash = Column(String(64), index=True, nullable=False)

@@ -1,23 +1,25 @@
 import logging
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import TimeoutError as PoolTimeout, OperationalError
 from app.database import engine, Base, SessionLocal
 from app import models
 from app.api import router
 from app.questions_data import FIXED_QUESTIONS
 from app.config import settings
 from datetime import datetime
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.engine import make_url
 
 logger = logging.getLogger("uvicorn")
 
-if settings.ENVIRONMENT.lower() == "production" and not os.getenv("SECRET_KEY"):
+if settings.ENVIRONMENT.lower() == "production" and "SECRET_KEY" not in settings.model_fields_set:
     raise RuntimeError("SECRET_KEY must be explicitly configured in production.")
 if settings.ENVIRONMENT.lower() == "production" and not settings.ADMIN_PASSWORD:
     raise RuntimeError("ADMIN_PASSWORD must be explicitly configured in production.")
-if settings.ENVIRONMENT.lower() == "production" and not os.getenv("DATABASE_URL"):
+if settings.ENVIRONMENT.lower() == "production" and "DATABASE_URL" not in settings.model_fields_set:
     raise RuntimeError("DATABASE_URL must be explicitly configured in production.")
 if settings.ENVIRONMENT.lower() == "production" and make_url(settings.sqlalchemy_database_url).password == "postgres":
     raise RuntimeError("The default PostgreSQL password is not allowed in production.")
@@ -147,7 +149,8 @@ def auto_seed_db():
         db.close()
 
 # Run auto-seed
-auto_seed_db()
+if settings.ENVIRONMENT.lower() != "production":
+    auto_seed_db()
 
 app = FastAPI(
     title="College Examination & Assessment Management System API",
@@ -179,6 +182,14 @@ app.add_middleware(
 
 app.include_router(router)
 
+
+@app.exception_handler(PoolTimeout)
+@app.exception_handler(OperationalError)
+async def database_unavailable(_request, _exception):
+    logger.warning("Database unavailable or connection pool exhausted; request can be retried.")
+    return JSONResponse(status_code=503, headers={"Retry-After": "3"},
+                        content={"detail": "Database is temporarily busy. Please retry; previously saved answers are retained."})
+
 @app.get("/")
 def read_root():
     return {
@@ -186,3 +197,18 @@ def read_root():
         "system": "College Examination & Assessment Management System",
         "message": "API is active and operational"
     }
+
+
+@app.get("/health/live")
+def liveness():
+    return {"status": "ok"}
+
+
+@app.get("/health/ready")
+def readiness():
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+    except Exception:
+        raise HTTPException(status_code=503, detail="Database is temporarily unavailable.")
+    return {"status": "ready"}

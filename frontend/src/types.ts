@@ -190,6 +190,7 @@ export interface AdminQuestion {
 
 export interface Exam {
   id: number;
+  selected_question_ids?: number[];
   title: string;
   code?: string;
   department_id?: number | null;
